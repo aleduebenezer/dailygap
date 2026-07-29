@@ -1,0 +1,1 @@
+ALTER TABLE public.calendars ADD COLUMN frozen boolean NOT NULL DEFAULT false;

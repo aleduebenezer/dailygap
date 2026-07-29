@@ -1,0 +1,10 @@
+# Daily Gap
+
+> AI-powered LinkedIn content calendar generator that turns your niche, voice samples, and schedule into a month of trending, on-brand posts.
+
+Daily Gap helps creators, founders, and professionals build a consistent LinkedIn presence without staring at a blank page. Enter a niche, paste a few writing samples, pick a schedule, and the AI returns a calendar of human-sounding posts ready to publish or auto-post via the connected LinkedIn account.
+
+## Pages
+
+- [Home](/): Product overview and free niche-to-post preview.
+- [Generate](/generate): Multi-step calendar generator (niche, samples, schedule, results).

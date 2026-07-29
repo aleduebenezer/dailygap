@@ -1,0 +1,8 @@
+{
+  "name": "Daily Gap",
+  "description": "AI-powered LinkedIn content calendar generator that creates a month of trending, on-brand posts matched to your voice, niche, and schedule.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

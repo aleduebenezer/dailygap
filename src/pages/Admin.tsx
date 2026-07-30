@@ -278,6 +278,9 @@ export default function Admin() {
       if (!error && data?.summary) {
         setSummary(data.summary);
         if (data.users?.length) setUsers(data.users);
+        if (data.rawCalendars) setRawCalendars(data.rawCalendars);
+        if (data.rawLogs) setRawLogs(data.rawLogs);
+        if (data.rawConns) setRawConns(data.rawConns);
       }
     } catch (e: any) {
       if (user?.email === "ebenezeraledu@gmail.com") {
@@ -292,7 +295,7 @@ export default function Admin() {
 
   const daysCount = timeframe === '7d' ? 7 : timeframe === '14d' ? 14 : 30;
 
-  // Graph Data 1: Posts Analytics (Scheduled vs Successful Publishes)
+  // Graph Data 1: Posts Analytics (100% Pure Real Database Counts)
   const postsGraphData = useMemo(() => {
     const result = [];
     const now = new Date();
@@ -305,51 +308,56 @@ export default function Admin() {
 
       let actualScheduled = 0;
       let actualSuccessful = 0;
+      let actualFailed = 0;
 
-      // Calculate scheduled posts from calendars
+      // Calculate scheduled posts from rawCalendars
       rawCalendars.forEach((cal) => {
         const calCreatedDate = cal.created_at ? cal.created_at.split('T')[0] : '';
         const posts = Array.isArray(cal.posts) ? cal.posts : [];
+        let matchingPosts = 0;
         posts.forEach((p: any) => {
-          const postDate = p.date || p.scheduled_date || calCreatedDate;
+          const postDate = p.date || p.scheduled_date || p.post_date;
           if (postDate && postDate.startsWith(dateStr)) {
-            actualScheduled++;
+            matchingPosts++;
           }
         });
-        if (calCreatedDate === dateStr && posts.length > 0) {
-          actualScheduled += posts.length;
+        actualScheduled += matchingPosts;
+
+        if (matchingPosts === 0 && calCreatedDate === dateStr && posts.length > 0) {
+          const hasExplicitDates = posts.some((p: any) => p.date || p.scheduled_date || p.post_date);
+          if (!hasExplicitDates) {
+            actualScheduled += posts.length;
+          }
         }
       });
 
-      // Calculate successful logs on this date
+      // Calculate logs on this date
       rawLogs.forEach((log) => {
-        const logDate = log.posted_at ? log.posted_at.split('T')[0] : '';
-        if (logDate === dateStr && log.status === 'success') {
-          actualSuccessful++;
+        const logDate = log.posted_at ? log.posted_at.split('T')[0] : (log.post_date ? log.post_date.split('T')[0] : '');
+        if (logDate === dateStr) {
+          if (log.status === 'success') {
+            actualSuccessful++;
+          } else if (log.status === 'failed' || log.status === 'error') {
+            actualFailed++;
+          }
         }
       });
-
-      // Smooth baseline for visuals if early dataset
-      const totalP = summary?.total_posts || 15;
-      const successP = summary?.posted_success || 8;
-      const baselineSched = Math.max(actualScheduled, Math.round(1 + Math.sin(i * 0.7) * 2 + (totalP / daysCount)));
-      const baselineSucc = Math.max(actualSuccessful, Math.round(baselineSched * 0.75 + (successP > 0 ? 1 : 0)));
 
       result.push({
         date: displayLabel,
-        "Total Scheduled Posts": Math.max(actualScheduled, baselineSched),
-        "Successful Published Posts": Math.max(actualSuccessful, baselineSucc),
+        "Total Scheduled Posts": actualScheduled,
+        "Successful Published Posts": actualSuccessful,
+        "Failed Publishes": actualFailed,
       });
     }
 
     return result;
-  }, [rawCalendars, rawLogs, daysCount, summary]);
+  }, [rawCalendars, rawLogs, daysCount]);
 
-  // Graph Data 2: Users and Visitors Analytics
+  // Graph Data 2: Real Users & Platform Activity (100% Pure Real Database Counts)
   const userVisitorGraphData = useMemo(() => {
     const result = [];
     const now = new Date();
-    const totalUsersCount = summary?.total_users || users.length || 1;
 
     for (let i = daysCount - 1; i >= 0; i--) {
       const d = new Date(now);
@@ -357,28 +365,36 @@ export default function Admin() {
       const dateStr = d.toISOString().split('T')[0];
       const displayLabel = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
-      let registeredCount = users.filter((u) => {
-        const createdDate = u.created_at ? u.created_at.split('T')[0] : '';
+      // Count cumulative registered users created on or before dateStr
+      const registeredCount = users.filter((u) => {
+        if (!u.created_at) return true;
+        const createdDate = u.created_at.split('T')[0];
         return createdDate <= dateStr;
       }).length;
 
-      if (registeredCount === 0) {
-        const progress = (daysCount - i) / daysCount;
-        registeredCount = Math.max(1, Math.round(totalUsersCount * (0.4 + 0.6 * progress)));
-      }
+      // Count cumulative active LinkedIn connections created on or before dateStr
+      const connectedCount = rawConns.filter((c) => {
+        if (!c.created_at) return true;
+        const connDate = c.created_at.split('T')[0];
+        return connDate <= dateStr;
+      }).length;
 
-      // Estimate visitors (site traffic) based on active users and organic multiplier
-      const organicVisitors = Math.round(registeredCount * 3.8 + Math.sin(i * 0.85) * 5 + 14);
+      // Daily post execution logs on this date
+      const dailyActions = rawLogs.filter((l) => {
+        const logDate = l.posted_at ? l.posted_at.split('T')[0] : (l.post_date ? l.post_date.split('T')[0] : '');
+        return logDate === dateStr;
+      }).length;
 
       result.push({
         date: displayLabel,
         "Registered Users": registeredCount,
-        "Unique Visitors": organicVisitors,
+        "LinkedIn Connections": connectedCount,
+        "Daily Post Actions": dailyActions,
       });
     }
 
     return result;
-  }, [users, daysCount, summary]);
+  }, [users, rawConns, rawLogs, daysCount]);
 
   if (authLoading) {
     return (
@@ -630,18 +646,18 @@ export default function Admin() {
               </div>
             </Card>
 
-            {/* Graph 2: Users and Visitors */}
+            {/* Graph 2: Users & Connections */}
             <Card className="p-5 space-y-4">
               <div className="flex items-start justify-between">
                 <div>
                   <div className="flex items-center gap-2 text-primary font-medium text-xs mb-1">
-                    <Users className="h-4 w-4" /> Audience & Traffic Growth
+                    <Users className="h-4 w-4" /> Platform Growth & Activity
                   </div>
-                  <h3 className="text-lg font-semibold tracking-tight">Registered Users vs. Unique Visitors</h3>
-                  <p className="text-xs text-muted-foreground">Traffic volume trends mapped against cumulative registered user growth.</p>
+                  <h3 className="text-lg font-semibold tracking-tight">Registered Users & Account Connections</h3>
+                  <p className="text-xs text-muted-foreground">Real-time database metrics of registered users, LinkedIn connections, and post actions.</p>
                 </div>
                 <Badge variant="outline" className="font-mono text-xs">
-                  {summary ? `${summary.total_users} Users` : 'Active'}
+                  {summary ? `${summary.total_users} Total Users` : 'Real-time'}
                 </Badge>
               </div>
 
@@ -653,9 +669,13 @@ export default function Admin() {
                         <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.4} />
                         <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.05} />
                       </linearGradient>
-                      <linearGradient id="colorVisitors" x1="0" y1="0" x2="0" y2="1">
+                      <linearGradient id="colorConns" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.4} />
                         <stop offset="95%" stopColor="#06b6d4" stopOpacity={0.05} />
+                      </linearGradient>
+                      <linearGradient id="colorActions" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
+                        <stop offset="95%" stopColor="#10b981" stopOpacity={0.05} />
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" opacity={0.15} vertical={false} />
@@ -665,8 +685,9 @@ export default function Admin() {
                       contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.1)', color: '#fff', fontSize: '12px' }}
                     />
                     <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
-                    <Area type="monotone" dataKey="Unique Visitors" stroke="#06b6d4" strokeWidth={2.5} fillOpacity={1} fill="url(#colorVisitors)" />
                     <Area type="monotone" dataKey="Registered Users" stroke="#8b5cf6" strokeWidth={2.5} fillOpacity={1} fill="url(#colorUsers)" />
+                    <Area type="monotone" dataKey="LinkedIn Connections" stroke="#06b6d4" strokeWidth={2.5} fillOpacity={1} fill="url(#colorConns)" />
+                    <Area type="monotone" dataKey="Daily Post Actions" stroke="#10b981" strokeWidth={2.5} fillOpacity={1} fill="url(#colorActions)" />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>

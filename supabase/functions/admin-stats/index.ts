@@ -156,6 +156,9 @@ Deno.serve(async (req) => {
         overall_success_rate: overallSuccessRate,
       },
       users: perUser,
+      rawCalendars: cals,
+      rawLogs: logs,
+      rawConns: conns,
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (e: any) {
     return new Response(JSON.stringify({ error: e.message || 'Server error' }), {

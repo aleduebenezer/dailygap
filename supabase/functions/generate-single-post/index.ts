@@ -28,7 +28,16 @@ serve(async (req) => {
       const uRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
         headers: { Authorization: `Bearer ${jwt}`, apikey: SERVICE_KEY },
       });
-      if (uRes.ok) userId = (await uRes.json())?.id ?? null;
+      if (uRes.ok) {
+        const u = await uRes.json();
+        userId = u?.id ?? null;
+        if (u?.user_metadata?.ai_restricted === true) {
+          return new Response(
+            JSON.stringify({ error: "Your account has been restricted from using AI generation features by an Administrator." }),
+            { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
     }
     if (userId) {
       const today = new Date().toISOString().split("T")[0];

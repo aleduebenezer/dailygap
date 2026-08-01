@@ -27,6 +27,12 @@ serve(async (req) => {
       if (uRes.ok) {
         const u = await uRes.json();
         userId = u?.id ?? null;
+        if (u?.user_metadata?.ai_restricted === true) {
+          return new Response(
+            JSON.stringify({ error: "Your account has been restricted from using AI generation features by an Administrator." }),
+            { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
       }
     }
     if (userId) {

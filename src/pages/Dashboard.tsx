@@ -61,7 +61,7 @@ interface CalendarEntry {
 
 const Dashboard = () => {
   const { theme, toggleTheme } = useTheme();
-  const { user, signOut } = useAuth();
+  const { user, signOut, isAiRestricted } = useAuth();
   const navigate = useNavigate();
   const [calendars, setCalendars] = useState<CalendarEntry[]>([]);
   const [selectedCalendar, setSelectedCalendar] = useState<CalendarEntry | null>(null);
@@ -223,6 +223,10 @@ const Dashboard = () => {
 
   const handleExtendNiche = async () => {
     if (!editNicheDialog) return;
+    if (isAiRestricted) {
+      toast.error("Your account has been restricted from using AI features by an Administrator. You can still manually create, schedule, edit, and publish posts.");
+      return;
+    }
     const days = Math.max(1, Math.min(30, extendDays));
     const existing = editNicheDialog.posts || [];
     const lastDate = existing.length
@@ -257,6 +261,10 @@ const Dashboard = () => {
 
   const handleRegenerateNiche = async () => {
     if (!editNicheDialog) return;
+    if (isAiRestricted) {
+      toast.error("Your account has been restricted from using AI features by an Administrator. You can still manually create, schedule, edit, and publish posts.");
+      return;
+    }
     const existing = editNicheDialog.posts || [];
     let startDate: string;
     let numDays: number;
@@ -390,6 +398,10 @@ const Dashboard = () => {
   };
 
   const handleGeneratePostForDate = async () => {
+    if (isAiRestricted) {
+      toast.error("Your account has been restricted from using AI features by an Administrator. You can still manually create, schedule, edit, and publish posts.");
+      return;
+    }
     if (!createPostPrompt.trim()) { toast.error("Tell the AI what to write about"); return; }
     const cal = calendars.find((c) => c.id === createPostCalendarId);
     setCreatePostGenerating(true);

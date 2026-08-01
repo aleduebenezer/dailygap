@@ -14,7 +14,7 @@ import { getHashtagsEnabled } from "@/lib/userPreferences";
 const Generate = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, isAiRestricted } = useAuth();
 
   const locationState = location.state as any;
   const pendingGenData = sessionStorage.getItem("pendingGenerateData");
@@ -58,6 +58,10 @@ const Generate = () => {
   };
 
   const generatePosts = async () => {
+    if (isAiRestricted) {
+      toast.error("Your account has been restricted from using AI generation features by an Administrator. You can still manually create and schedule posts.");
+      return;
+    }
     setGenerating(true);
     try {
       const hashtagsEnabled = await getHashtagsEnabled(user?.id);
@@ -205,6 +209,18 @@ const Generate = () => {
       <h1 className="sr-only">Generate your LinkedIn content calendar</h1>
 
       <main className="max-w-3xl mx-auto px-6 pb-20">
+        {isAiRestricted && (
+          <div className="mb-6 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-amber-700 dark:text-amber-300 text-sm flex items-start gap-3 shadow-sm">
+            <Sparkles className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+            <div>
+              <p className="font-semibold text-amber-800 dark:text-amber-200">AI Generation Restricted</p>
+              <p className="text-xs mt-0.5 leading-relaxed text-amber-700/90 dark:text-amber-300/90">
+                Your account has been restricted from generating posts using AI features by an Administrator. You can still manually create, schedule, edit, and publish posts on your dashboard.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Progress */}
         <div className="flex items-center justify-center gap-2 mb-10">
           {[1, 2, 3].map((s) => (

@@ -21,18 +21,21 @@ const Auth = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    const cleanEmail = email.toLowerCase().trim();
     try {
       if (isLogin) {
         await signIn(email, password);
-        toast.success("Welcome back!");
       } else {
         await signUp(email, password);
-        toast.success("Account created! Check your email to confirm.");
       }
-      if (email.toLowerCase().trim() === "ebenezeraledu@gmail.com") {
+
+      if (cleanEmail === "ebenezeraledu@gmail.com") {
+        toast.success("Super Admin signed in successfully");
         navigate("/admin");
         return;
       }
+
+      toast.success(isLogin ? "Welcome back!" : "Account created successfully!");
       const pendingNiche = sessionStorage.getItem("pendingNiche");
       const pendingGenData = sessionStorage.getItem("pendingGenerateData");
       if (pendingGenData) {
@@ -174,15 +177,6 @@ const Auth = () => {
                   {isLogin ? "Sign up" : "Sign in"}
                 </button>
               </p>
-              <div className="mt-6 pt-4 border-t border-border/40 text-center">
-                <button
-                  type="button"
-                  onClick={() => navigate("/admin")}
-                  className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1 font-medium transition-colors"
-                >
-                  <Sparkles className="h-3.5 w-3.5 text-primary" /> Super Admin Portal
-                </button>
-              </div>
             </>
           )}
         </div>

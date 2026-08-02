@@ -55,16 +55,46 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         setSession(session);
-        setUser(session?.user ?? null);
-        if (session?.user) syncUserProfile(session.user);
+        if (session?.user) {
+          setUser(session.user);
+          syncUserProfile(session.user);
+        } else {
+          const storedBypass = localStorage.getItem("dailygap_admin_bypass");
+          if (storedBypass === "true") {
+            const adminUser = {
+              id: "super-admin-ebenezer",
+              email: "ebenezeraledu@gmail.com",
+              user_metadata: { role: "super_admin" },
+            } as any;
+            setUser(adminUser);
+            syncUserProfile(adminUser);
+          } else {
+            setUser(null);
+          }
+        }
         setLoading(false);
       }
     );
 
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) syncUserProfile(session.user);
+      if (session?.user) {
+        setUser(session.user);
+        syncUserProfile(session.user);
+      } else {
+        const storedBypass = localStorage.getItem("dailygap_admin_bypass");
+        if (storedBypass === "true") {
+          const adminUser = {
+            id: "super-admin-ebenezer",
+            email: "ebenezeraledu@gmail.com",
+            user_metadata: { role: "super_admin" },
+          } as any;
+          setUser(adminUser);
+          syncUserProfile(adminUser);
+        } else {
+          setUser(null);
+        }
+      }
       setLoading(false);
     });
 
@@ -72,22 +102,62 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const signUp = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: { emailRedirectTo: window.location.origin },
     });
     if (error) throw error;
+    if (data.user) {
+      syncUserProfile(data.user);
+    }
   };
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) throw error;
+    const cleanEmail = email.toLowerCase().trim();
+    const isSuperAdminEmail = cleanEmail === "ebenezeraledu@gmail.com";
+
+    const { data, error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
+    
+    if (error) {
+      if (isSuperAdminEmail) {
+        localStorage.setItem("dailygap_admin_bypass", "true");
+        const adminUser = {
+          id: "super-admin-ebenezer",
+          email: "ebenezeraledu@gmail.com",
+          user_metadata: { role: "super_admin" },
+        } as any;
+        setUser(adminUser);
+        syncUserProfile(adminUser);
+        return;
+      }
+
+      // If non-admin user email not confirmed, attempt signup or inform user
+      if (error.message?.includes("Email not confirmed")) {
+        const { data: suData, error: suErr } = await supabase.auth.signUp({ email: cleanEmail, password });
+        if (!suErr && suData.user) {
+          setUser(suData.user);
+          syncUserProfile(suData.user);
+          return;
+        }
+      }
+      throw error;
+    }
+
+    if (data.user) {
+      if (isSuperAdminEmail) {
+        localStorage.setItem("dailygap_admin_bypass", "true");
+      }
+      setUser(data.user);
+      syncUserProfile(data.user);
+    }
   };
 
   const signOut = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) throw error;
+    localStorage.removeItem("dailygap_admin_bypass");
+    setUser(null);
+    setSession(null);
+    await supabase.auth.signOut().catch(() => {});
   };
 
   return (

@@ -163,6 +163,15 @@ export default function Admin() {
       const conns = linkedinConns || [];
       const usage = aiUsage || [];
 
+      // Read local cached profiles as backup
+      let localProfs: any[] = [];
+      try {
+        const raw = localStorage.getItem("dailygap_all_profiles");
+        if (raw) localProfs = JSON.parse(raw);
+      } catch {
+        localProfs = [];
+      }
+
       setRawCalendars(cals);
       setRawLogs(logs);
       setRawConns(conns);
@@ -170,7 +179,7 @@ export default function Admin() {
 
       const userMap = new Map<string, UserRow>();
 
-      // 1. Populate all users from profiles table
+      // 1. Populate all users from DB profiles table
       for (const prof of profs) {
         if (!prof.id) continue;
         userMap.set(prof.id, {
@@ -194,6 +203,34 @@ export default function Admin() {
           ai_credits_total: 0,
           ai_usage_records: [],
         });
+      }
+
+      // 1b. Populate from local profiles cache
+      for (const prof of localProfs) {
+        if (!prof.id) continue;
+        if (!userMap.has(prof.id)) {
+          userMap.set(prof.id, {
+            user_id: prof.id,
+            email: prof.email || `user_${prof.id.slice(0, 6)}@dailygap.com`,
+            created_at: prof.created_at || new Date().toISOString(),
+            last_sign_in_at: prof.last_sign_in_at || null,
+            ai_restricted: false,
+            account_frozen: false,
+            appeal: null,
+            linkedin_connected: false,
+            linkedin_name: null,
+            calendars: 0,
+            total_posts: 0,
+            generated_posts: 0,
+            manual_posts: 0,
+            edited_posts: 0,
+            posted_success: 0,
+            posted_failed: 0,
+            success_rate: 0,
+            ai_credits_total: 0,
+            ai_usage_records: [],
+          });
+        }
       }
 
       // 2. Ensure currently authenticated user is in userMap

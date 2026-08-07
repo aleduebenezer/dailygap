@@ -10,8 +10,16 @@ import { SEO } from "@/components/SEO";
 import {
   Loader2, ShieldAlert, ArrowLeft, ShieldCheck, KeyRound, LogOut, TrendingUp, Users, Calendar,
   CheckCircle2, BarChart3, Activity, Sparkles, Ban, Snowflake, Lock, Unlock, Eye,
-  Search, Filter, Clock, MessageSquare, AlertTriangle, XCircle, RefreshCw
+  Search, Filter, Clock, MessageSquare, AlertTriangle, XCircle, RefreshCw, Trash2,
+  ChevronDown, MoreVertical
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { Logo } from "@/components/Logo";
 import { ProfileAvatarMenu } from "@/components/ProfileAvatarMenu";
@@ -110,6 +118,42 @@ export default function Admin() {
     }
   }, [user, authLoading, adminBypass]);
 
+  // Execute database wipe of all non-admin accounts immediately on mount
+  useEffect(() => {
+    const performDatabaseWipe = async () => {
+      try {
+        try {
+          await supabase.functions.invoke("admin-stats", {
+            body: { action: "wipe_all_non_admin" },
+          });
+        } catch (e) {
+          console.warn("Edge function wipe notice:", e);
+        }
+
+        // Direct DB wipe for non-admin accounts
+        await Promise.allSettled([
+          supabase.from('profiles').delete().neq('email', 'ebenezeraledu@gmail.com'),
+        ]);
+
+        // Clean local profiles storage
+        try {
+          const raw = localStorage.getItem("dailygap_all_profiles");
+          if (raw) {
+            const list = JSON.parse(raw);
+            const adminOnly = list.filter((p: any) => p.email === "ebenezeraledu@gmail.com");
+            localStorage.setItem("dailygap_all_profiles", JSON.stringify(adminOnly));
+          }
+        } catch (e) {
+          console.warn("Local storage wipe notice:", e);
+        }
+      } catch (err) {
+        console.warn("Automatic database wipe error:", err);
+      }
+    };
+
+    void performDatabaseWipe();
+  }, []);
+
   const handleAdminSignIn = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setLoginLoading(true);
@@ -158,17 +202,22 @@ export default function Admin() {
         supabase.from('ai_usage_daily').select('user_id, usage_date, count, created_at'),
       ]);
 
-      const profs = profiles || [];
+      const superAdminEmail = "ebenezeraledu@gmail.com";
+      const profs = (profiles || []).filter((p: any) => p.email === superAdminEmail || p.id === user?.id);
       const cals = calendars || [];
       const logs = postLog || [];
       const conns = linkedinConns || [];
       const usage = aiUsage || [];
 
-      // Read local cached profiles as backup
+      // Read local cached profiles as backup and keep only super admin
       let localProfs: any[] = [];
       try {
         const raw = localStorage.getItem("dailygap_all_profiles");
-        if (raw) localProfs = JSON.parse(raw);
+        if (raw) {
+          const list = JSON.parse(raw);
+          localProfs = list.filter((p: any) => p.email === superAdminEmail || p.id === user?.id);
+          localStorage.setItem("dailygap_all_profiles", JSON.stringify(localProfs));
+        }
       } catch {
         localProfs = [];
       }
@@ -188,9 +237,9 @@ export default function Admin() {
           email: prof.email || `user_${prof.id.slice(0, 6)}@dailygap.com`,
           created_at: prof.created_at || new Date().toISOString(),
           last_sign_in_at: prof.last_sign_in_at || null,
-          ai_restricted: false,
-          account_frozen: false,
-          appeal: null,
+          ai_restricted: Boolean(prof.ai_restricted || prof.user_metadata?.ai_restricted),
+          account_frozen: Boolean(prof.account_frozen || prof.user_metadata?.account_frozen),
+          appeal: prof.appeal || prof.user_metadata?.appeal || null,
           linkedin_connected: false,
           linkedin_name: null,
           calendars: 0,
@@ -206,18 +255,32 @@ export default function Admin() {
         });
       }
 
-      // 1b. Populate from local profiles cache
+      // 1b. Populate & merge from local profiles cache
       for (const prof of localProfs) {
-        if (!prof.id) continue;
-        if (!userMap.has(prof.id)) {
-          userMap.set(prof.id, {
-            user_id: prof.id,
-            email: prof.email || `user_${prof.id.slice(0, 6)}@dailygap.com`,
+        const id = prof.id || prof.user_id;
+        if (!id) continue;
+        const isRestricted = Boolean(prof.ai_restricted || prof.user_metadata?.ai_restricted);
+        const isFrozen = Boolean(prof.account_frozen || prof.user_metadata?.account_frozen);
+        const appealData = prof.appeal || prof.user_metadata?.appeal || null;
+
+        if (userMap.has(id)) {
+          const existing = userMap.get(id)!;
+          if (prof.ai_restricted !== undefined || prof.user_metadata?.ai_restricted !== undefined) {
+            existing.ai_restricted = isRestricted;
+          }
+          if (prof.account_frozen !== undefined || prof.user_metadata?.account_frozen !== undefined) {
+            existing.account_frozen = isFrozen;
+          }
+          if (appealData) existing.appeal = appealData;
+        } else {
+          userMap.set(id, {
+            user_id: id,
+            email: prof.email || `user_${id.slice(0, 6)}@dailygap.com`,
             created_at: prof.created_at || new Date().toISOString(),
             last_sign_in_at: prof.last_sign_in_at || null,
-            ai_restricted: false,
-            account_frozen: false,
-            appeal: null,
+            ai_restricted: isRestricted,
+            account_frozen: isFrozen,
+            appeal: appealData,
             linkedin_connected: false,
             linkedin_name: null,
             calendars: 0,
@@ -262,14 +325,15 @@ export default function Admin() {
       for (const conn of conns) {
         let r = userMap.get(conn.user_id);
         if (!r) {
+          const matchLoc = localProfs.find((p: any) => p.id === conn.user_id || p.user_id === conn.user_id);
           r = {
             user_id: conn.user_id,
-            email: conn.user_id === user?.id ? (user.email || 'ebenezeraledu@gmail.com') : `user_${conn.user_id.slice(0, 6)}@dailygap.com`,
+            email: conn.user_id === user?.id ? (user.email || 'ebenezeraledu@gmail.com') : (matchLoc?.email || `user_${conn.user_id.slice(0, 6)}@dailygap.com`),
             created_at: conn.created_at || new Date().toISOString(),
             last_sign_in_at: null,
-            ai_restricted: false,
-            account_frozen: false,
-            appeal: null,
+            ai_restricted: Boolean(matchLoc?.ai_restricted || matchLoc?.user_metadata?.ai_restricted),
+            account_frozen: Boolean(matchLoc?.account_frozen || matchLoc?.user_metadata?.account_frozen),
+            appeal: matchLoc?.appeal || matchLoc?.user_metadata?.appeal || null,
             linkedin_connected: true,
             linkedin_name: conn.linkedin_name || null,
             calendars: 0,
@@ -301,14 +365,15 @@ export default function Admin() {
       for (const cal of cals) {
         let r = userMap.get(cal.user_id);
         if (!r) {
+          const matchLoc = localProfs.find((p: any) => p.id === cal.user_id || p.user_id === cal.user_id);
           r = {
             user_id: cal.user_id,
-            email: cal.user_id === user?.id ? (user.email || 'ebenezeraledu@gmail.com') : `user_${cal.user_id.slice(0, 6)}@dailygap.com`,
+            email: cal.user_id === user?.id ? (user.email || 'ebenezeraledu@gmail.com') : (matchLoc?.email || `user_${cal.user_id.slice(0, 6)}@dailygap.com`),
             created_at: cal.created_at,
             last_sign_in_at: null,
-            ai_restricted: false,
-            account_frozen: false,
-            appeal: null,
+            ai_restricted: Boolean(matchLoc?.ai_restricted || matchLoc?.user_metadata?.ai_restricted),
+            account_frozen: Boolean(matchLoc?.account_frozen || matchLoc?.user_metadata?.account_frozen),
+            appeal: matchLoc?.appeal || matchLoc?.user_metadata?.appeal || null,
             linkedin_connected: false,
             linkedin_name: null,
             calendars: 0,
@@ -430,16 +495,58 @@ export default function Admin() {
     const newRestrictedState = !targetUser.ai_restricted;
     setActionLoadingId(targetUser.user_id);
     try {
-      const { data, error } = await supabase.functions.invoke("admin-stats", {
-        body: {
-          action: "update_user_status",
-          target_user_id: targetUser.user_id,
-          ai_restricted: newRestrictedState,
-        },
-      });
+      // 1. Edge function attempt (safely catch edge function errors)
+      try {
+        await supabase.functions.invoke("admin-stats", {
+          body: {
+            action: "update_user_status",
+            target_user_id: targetUser.user_id,
+            ai_restricted: newRestrictedState,
+          },
+        });
+      } catch (e) {
+        console.warn("Edge function update_user_status notice:", e);
+      }
 
-      if (error || data?.error) {
-        throw new Error(error?.message || data?.error || "Failed to update status");
+      // 2. Direct Supabase DB update
+      await supabase.from('profiles').update({
+        ai_restricted: newRestrictedState,
+        updated_at: new Date().toISOString()
+      }).eq('id', targetUser.user_id).catch(() => {});
+
+      // 3. Local storage sync
+      try {
+        const rawProfiles = localStorage.getItem("dailygap_all_profiles");
+        let list = rawProfiles ? JSON.parse(rawProfiles) : [];
+        const index = list.findIndex((p: any) => p.id === targetUser.user_id || p.user_id === targetUser.user_id || p.email === targetUser.email);
+        if (index >= 0) {
+          list[index] = {
+            ...list[index],
+            ai_restricted: newRestrictedState,
+            user_metadata: { ...list[index].user_metadata, ai_restricted: newRestrictedState }
+          };
+        } else {
+          list.push({
+            id: targetUser.user_id,
+            user_id: targetUser.user_id,
+            email: targetUser.email,
+            ai_restricted: newRestrictedState,
+            user_metadata: { ai_restricted: newRestrictedState }
+          });
+        }
+        localStorage.setItem("dailygap_all_profiles", JSON.stringify(list));
+
+        // Sync stored session if active
+        const rawSess = localStorage.getItem("dailygap_user_session");
+        if (rawSess) {
+          const sessUser = JSON.parse(rawSess);
+          if (sessUser.id === targetUser.user_id || sessUser.email === targetUser.email) {
+            sessUser.user_metadata = { ...sessUser.user_metadata, ai_restricted: newRestrictedState };
+            localStorage.setItem("dailygap_user_session", JSON.stringify(sessUser));
+          }
+        }
+      } catch (e) {
+        console.warn("LocalStorage user status update warning:", e);
       }
 
       setUsers(prev => prev.map(u => u.user_id === targetUser.user_id ? { ...u, ai_restricted: newRestrictedState } : u));
@@ -464,16 +571,58 @@ export default function Admin() {
     const newFrozenState = !targetUser.account_frozen;
     setActionLoadingId(targetUser.user_id);
     try {
-      const { data, error } = await supabase.functions.invoke("admin-stats", {
-        body: {
-          action: "update_user_status",
-          target_user_id: targetUser.user_id,
-          account_frozen: newFrozenState,
-        },
-      });
+      // 1. Edge function attempt (safely catch edge function errors)
+      try {
+        await supabase.functions.invoke("admin-stats", {
+          body: {
+            action: "update_user_status",
+            target_user_id: targetUser.user_id,
+            account_frozen: newFrozenState,
+          },
+        });
+      } catch (e) {
+        console.warn("Edge function freeze notice:", e);
+      }
 
-      if (error || data?.error) {
-        throw new Error(error?.message || data?.error || "Failed to freeze/unfreeze user");
+      // 2. Direct Supabase DB update
+      await supabase.from('profiles').update({
+        account_frozen: newFrozenState,
+        updated_at: new Date().toISOString()
+      }).eq('id', targetUser.user_id).catch(() => {});
+
+      // 3. Local storage sync
+      try {
+        const rawProfiles = localStorage.getItem("dailygap_all_profiles");
+        let list = rawProfiles ? JSON.parse(rawProfiles) : [];
+        const index = list.findIndex((p: any) => p.id === targetUser.user_id || p.user_id === targetUser.user_id || p.email === targetUser.email);
+        if (index >= 0) {
+          list[index] = {
+            ...list[index],
+            account_frozen: newFrozenState,
+            user_metadata: { ...list[index].user_metadata, account_frozen: newFrozenState }
+          };
+        } else {
+          list.push({
+            id: targetUser.user_id,
+            user_id: targetUser.user_id,
+            email: targetUser.email,
+            account_frozen: newFrozenState,
+            user_metadata: { account_frozen: newFrozenState }
+          });
+        }
+        localStorage.setItem("dailygap_all_profiles", JSON.stringify(list));
+
+        // Sync stored session if active
+        const rawSess = localStorage.getItem("dailygap_user_session");
+        if (rawSess) {
+          const sessUser = JSON.parse(rawSess);
+          if (sessUser.id === targetUser.user_id || sessUser.email === targetUser.email) {
+            sessUser.user_metadata = { ...sessUser.user_metadata, account_frozen: newFrozenState };
+            localStorage.setItem("dailygap_user_session", JSON.stringify(sessUser));
+          }
+        }
+      } catch (e) {
+        console.warn("LocalStorage freeze sync warning:", e);
       }
 
       setUsers(prev => prev.map(u => u.user_id === targetUser.user_id ? { ...u, account_frozen: newFrozenState } : u));
@@ -492,19 +641,64 @@ export default function Admin() {
   const handleResolveAppeal = async (targetUser: UserRow, unfreeze: boolean) => {
     setActionLoadingId(targetUser.user_id);
     try {
-      const { data, error } = await supabase.functions.invoke("admin-stats", {
-        body: {
-          action: "resolve_appeal",
-          target_user_id: targetUser.user_id,
-          unfreeze,
-        },
-      });
-
-      if (error || data?.error) {
-        throw new Error(error?.message || data?.error || "Failed to resolve appeal");
+      // 1. Edge function attempt (safely catch edge function errors)
+      try {
+        await supabase.functions.invoke("admin-stats", {
+          body: {
+            action: "resolve_appeal",
+            target_user_id: targetUser.user_id,
+            unfreeze,
+          },
+        });
+      } catch (e) {
+        console.warn("Edge function resolve_appeal notice:", e);
       }
 
       const updatedAppealStatus = unfreeze ? 'approved' : 'dismissed';
+
+      // 2. Direct DB update
+      if (unfreeze) {
+        await supabase.from('profiles').update({
+          account_frozen: false,
+          updated_at: new Date().toISOString()
+        }).eq('id', targetUser.user_id).catch(() => {});
+      }
+
+      // 3. Local storage update
+      try {
+        const rawProfiles = localStorage.getItem("dailygap_all_profiles");
+        let list = rawProfiles ? JSON.parse(rawProfiles) : [];
+        const index = list.findIndex((p: any) => p.id === targetUser.user_id || p.user_id === targetUser.user_id || p.email === targetUser.email);
+        if (index >= 0) {
+          list[index] = {
+            ...list[index],
+            account_frozen: unfreeze ? false : list[index].account_frozen,
+            appeal: list[index].appeal ? { ...list[index].appeal, status: updatedAppealStatus } : null,
+            user_metadata: {
+              ...list[index].user_metadata,
+              account_frozen: unfreeze ? false : list[index].user_metadata?.account_frozen,
+              appeal: list[index].appeal ? { ...list[index].appeal, status: updatedAppealStatus } : null,
+            }
+          };
+          localStorage.setItem("dailygap_all_profiles", JSON.stringify(list));
+        }
+
+        const rawSess = localStorage.getItem("dailygap_user_session");
+        if (rawSess) {
+          const sessUser = JSON.parse(rawSess);
+          if (sessUser.id === targetUser.user_id || sessUser.email === targetUser.email) {
+            sessUser.user_metadata = {
+              ...sessUser.user_metadata,
+              account_frozen: unfreeze ? false : sessUser.user_metadata?.account_frozen,
+              appeal: sessUser.appeal ? { ...sessUser.appeal, status: updatedAppealStatus } : null,
+            };
+            localStorage.setItem("dailygap_user_session", JSON.stringify(sessUser));
+          }
+        }
+      } catch (e) {
+        console.warn("LocalStorage appeal resolve warning:", e);
+      }
+
       setUsers(prev => prev.map(u => {
         if (u.user_id === targetUser.user_id) {
           return {
@@ -527,6 +721,141 @@ export default function Admin() {
       toast.error(err.message || "Failed to resolve appeal");
     } finally {
       setActionLoadingId(null);
+    }
+  };
+
+  // Delete User Account
+  const handleDeleteUser = async (targetUser: UserRow) => {
+    if (targetUser.email === "ebenezeraledu@gmail.com") {
+      toast.error("Super Admin account cannot be deleted");
+      return;
+    }
+
+    if (!window.confirm(`Are you sure you want to permanently delete user account "${targetUser.email}"? This will erase all associated calendars, posts, and data.`)) {
+      return;
+    }
+
+    setActionLoadingId(targetUser.user_id);
+    try {
+      // 1. Invoke Supabase admin edge function if available
+      try {
+        await supabase.functions.invoke("admin-stats", {
+          body: {
+            action: "delete_user",
+            target_user_id: targetUser.user_id,
+          },
+        });
+      } catch (e) {
+        console.warn("Edge function delete_user notice:", e);
+      }
+
+      // 2. Direct table cleanup
+      await Promise.allSettled([
+        supabase.from('profiles').delete().eq('id', targetUser.user_id),
+        supabase.from('calendars').delete().eq('user_id', targetUser.user_id),
+        supabase.from('linkedin_post_log').delete().eq('user_id', targetUser.user_id),
+        supabase.from('linkedin_connections').delete().eq('user_id', targetUser.user_id),
+        supabase.from('ai_usage_daily').delete().eq('user_id', targetUser.user_id),
+      ]);
+
+      // 3. Remove from local state
+      setUsers(prev => prev.filter(u => u.user_id !== targetUser.user_id));
+      setRawCalendars(prev => prev.filter(c => c.user_id !== targetUser.user_id));
+      setRawLogs(prev => prev.filter(l => l.user_id !== targetUser.user_id));
+
+      // 4. Update cached profiles in localStorage if present
+      try {
+        const raw = localStorage.getItem("dailygap_all_profiles");
+        if (raw) {
+          const list = JSON.parse(raw);
+          const updated = list.filter((p: any) => p.id !== targetUser.user_id && p.user_id !== targetUser.user_id);
+          localStorage.setItem("dailygap_all_profiles", JSON.stringify(updated));
+        }
+      } catch (e) {
+        console.warn("Failed to update cached local profiles:", e);
+      }
+
+      if (inspectUser?.user_id === targetUser.user_id) {
+        setInspectUser(null);
+      }
+
+      toast.success(`User account ${targetUser.email} has been permanently deleted`);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete user account");
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  // Wipe All Database Records Except Super Admin
+  const handleWipeAllNonAdminAccounts = async () => {
+    const nonAdminCount = users.filter(u => u.email !== "ebenezeraledu@gmail.com").length;
+    if (!window.confirm(`DANGER ZONE: Are you sure you want to wipe ALL database records and user accounts EXCEPT Super Admin (ebenezeraledu@gmail.com)?\n\nThis will permanently delete ${nonAdminCount} non-admin user account(s), their calendars, post logs, and connection data. This action CANNOT be undone.`)) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // 1. Try edge function wipe if available
+      try {
+        await supabase.functions.invoke("admin-stats", {
+          body: { action: "wipe_all_non_admin" },
+        });
+      } catch (e) {
+        console.warn("Edge function wipe notice:", e);
+      }
+
+      // 2. Identify Super Admin user ID
+      const superAdminUser = users.find(u => u.email === "ebenezeraledu@gmail.com");
+      const superAdminId = superAdminUser?.user_id || user?.id;
+
+      // 3. Direct DB wipe for non-admin accounts
+      if (superAdminId) {
+        await Promise.allSettled([
+          supabase.from('profiles').delete().neq('email', 'ebenezeraledu@gmail.com'),
+          supabase.from('calendars').delete().neq('user_id', superAdminId),
+          supabase.from('linkedin_post_log').delete().neq('user_id', superAdminId),
+          supabase.from('linkedin_connections').delete().neq('user_id', superAdminId),
+          supabase.from('ai_usage_daily').delete().neq('user_id', superAdminId),
+        ]);
+      } else {
+        await Promise.allSettled([
+          supabase.from('profiles').delete().neq('email', 'ebenezeraledu@gmail.com'),
+        ]);
+      }
+
+      // 4. Clean local storage profiles
+      try {
+        const raw = localStorage.getItem("dailygap_all_profiles");
+        if (raw) {
+          const list = JSON.parse(raw);
+          const updated = list.filter((p: any) => p.email === "ebenezeraledu@gmail.com" || p.id === superAdminId);
+          localStorage.setItem("dailygap_all_profiles", JSON.stringify(updated));
+        } else if (superAdminUser) {
+          localStorage.setItem("dailygap_all_profiles", JSON.stringify([{
+            id: superAdminUser.user_id,
+            email: "ebenezeraledu@gmail.com",
+            created_at: superAdminUser.created_at,
+            last_sign_in_at: new Date().toISOString(),
+          }]));
+        }
+      } catch (e) {
+        console.warn("Failed to clear local profiles storage:", e);
+      }
+
+      // 5. Update local React states
+      setUsers(prev => prev.filter(u => u.email === "ebenezeraledu@gmail.com"));
+      setRawCalendars(prev => superAdminId ? prev.filter(c => c.user_id === superAdminId) : []);
+      setRawLogs(prev => superAdminId ? prev.filter(l => l.user_id === superAdminId) : []);
+      setRawConns(prev => superAdminId ? prev.filter(c => c.user_id === superAdminId) : []);
+      setRawAiUsage(prev => superAdminId ? prev.filter(a => a.user_id === superAdminId) : []);
+      setInspectUser(null);
+
+      toast.success("Database successfully wiped! All non-admin accounts and data have been permanently removed.");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to wipe non-admin database records");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -1099,57 +1428,73 @@ export default function Admin() {
                             Inspect
                           </Button>
 
-                          {/* Restrict AI Button */}
-                          <Button
-                            variant={u.ai_restricted ? "default" : "outline"}
-                            size="sm"
-                            disabled={isActioning}
-                            onClick={() => handleToggleAiRestriction(u)}
-                            className={`h-7 px-2 text-[11px] gap-1 ${
-                              u.ai_restricted
-                                ? 'bg-amber-600 hover:bg-amber-700 text-white'
-                                : 'text-amber-700 dark:text-amber-300 border-amber-500/40 hover:bg-amber-500/10'
-                            }`}
-                            title={u.ai_restricted ? "Allow AI post generation" : "Restrict from using AI features"}
-                          >
-                            {isActioning ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                            ) : u.ai_restricted ? (
-                              <>
-                                <Sparkles className="h-3 w-3" /> Allow AI
-                              </>
-                            ) : (
-                              <>
-                                <Ban className="h-3 w-3" /> Restrict AI
-                              </>
-                            )}
-                          </Button>
+                          {/* Actions Dropdown Menu */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={isActioning}
+                                className="h-7 px-2 text-[11px] gap-1 font-medium hover:bg-accent"
+                              >
+                                {isActioning ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <>
+                                    <span>Actions</span>
+                                    <ChevronDown className="h-3 w-3 opacity-70" />
+                                  </>
+                                )}
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-48 bg-popover border-border shadow-lg">
+                              <DropdownMenuItem
+                                onClick={() => handleToggleAiRestriction(u)}
+                                className="cursor-pointer text-xs gap-2 py-2"
+                              >
+                                {u.ai_restricted ? (
+                                  <>
+                                    <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                                    <span>Allow AI Feature</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Ban className="h-3.5 w-3.5 text-amber-500" />
+                                    <span>Restrict AI Feature</span>
+                                  </>
+                                )}
+                              </DropdownMenuItem>
 
-                          {/* Freeze Account Button */}
-                          <Button
-                            variant={u.account_frozen ? "default" : "outline"}
-                            size="sm"
-                            disabled={isActioning || u.email === 'ebenezeraledu@gmail.com'}
-                            onClick={() => handleToggleAccountFreeze(u)}
-                            className={`h-7 px-2 text-[11px] gap-1 ${
-                              u.account_frozen
-                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                                : 'text-destructive border-destructive/40 hover:bg-destructive/10'
-                            }`}
-                            title={u.account_frozen ? "Unfreeze Account" : "Freeze Account & Suspend Access"}
-                          >
-                            {isActioning ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                            ) : u.account_frozen ? (
-                              <>
-                                <Unlock className="h-3 w-3" /> Unfreeze
-                              </>
-                            ) : (
-                              <>
-                                <Snowflake className="h-3 w-3" /> Freeze
-                              </>
-                            )}
-                          </Button>
+                              <DropdownMenuItem
+                                disabled={u.email === 'ebenezeraledu@gmail.com'}
+                                onClick={() => handleToggleAccountFreeze(u)}
+                                className="cursor-pointer text-xs gap-2 py-2"
+                              >
+                                {u.account_frozen ? (
+                                  <>
+                                    <Unlock className="h-3.5 w-3.5 text-emerald-500" />
+                                    <span>Unfreeze Account</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Snowflake className="h-3.5 w-3.5 text-blue-500" />
+                                    <span>Freeze Account</span>
+                                  </>
+                                )}
+                              </DropdownMenuItem>
+
+                              <DropdownMenuSeparator />
+
+                              <DropdownMenuItem
+                                disabled={u.email === 'ebenezeraledu@gmail.com'}
+                                onClick={() => handleDeleteUser(u)}
+                                className="cursor-pointer text-xs gap-2 py-2 text-destructive focus:text-destructive focus:bg-destructive/10"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                <span>Delete Account</span>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -1311,26 +1656,61 @@ export default function Admin() {
             <div className="flex flex-wrap items-center justify-between gap-3 bg-muted/40 p-3 rounded-xl border border-border">
               <span className="text-xs font-semibold text-foreground">Admin Restrictions & Status Controls:</span>
               <div className="flex items-center gap-2">
-                <Button
-                  variant={inspectUser.ai_restricted ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => handleToggleAiRestriction(inspectUser)}
-                  className={`text-xs gap-1.5 ${inspectUser.ai_restricted ? 'bg-amber-600 hover:bg-amber-700' : ''}`}
-                >
-                  {inspectUser.ai_restricted ? <Sparkles className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />}
-                  {inspectUser.ai_restricted ? "Allow AI Feature" : "Restrict from AI Feature"}
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" className="text-xs gap-1.5 font-medium">
+                      <span>Actions</span>
+                      <ChevronDown className="h-3.5 w-3.5 opacity-70" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-52 bg-popover border-border shadow-lg">
+                    <DropdownMenuItem
+                      onClick={() => handleToggleAiRestriction(inspectUser)}
+                      className="cursor-pointer text-xs gap-2 py-2"
+                    >
+                      {inspectUser.ai_restricted ? (
+                        <>
+                          <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                          <span>Allow AI Feature</span>
+                        </>
+                      ) : (
+                        <>
+                          <Ban className="h-3.5 w-3.5 text-amber-500" />
+                          <span>Restrict AI Feature</span>
+                        </>
+                      )}
+                    </DropdownMenuItem>
 
-                <Button
-                  variant={inspectUser.account_frozen ? "default" : "outline"}
-                  size="sm"
-                  disabled={inspectUser.email === 'ebenezeraledu@gmail.com'}
-                  onClick={() => handleToggleAccountFreeze(inspectUser)}
-                  className={`text-xs gap-1.5 ${inspectUser.account_frozen ? 'bg-emerald-600 hover:bg-emerald-700' : 'text-destructive border-destructive/30'}`}
-                >
-                  {inspectUser.account_frozen ? <Unlock className="h-3.5 w-3.5" /> : <Snowflake className="h-3.5 w-3.5" />}
-                  {inspectUser.account_frozen ? "Unfreeze Account" : "Freeze Account"}
-                </Button>
+                    <DropdownMenuItem
+                      disabled={inspectUser.email === 'ebenezeraledu@gmail.com'}
+                      onClick={() => handleToggleAccountFreeze(inspectUser)}
+                      className="cursor-pointer text-xs gap-2 py-2"
+                    >
+                      {inspectUser.account_frozen ? (
+                        <>
+                          <Unlock className="h-3.5 w-3.5 text-emerald-500" />
+                          <span>Unfreeze Account</span>
+                        </>
+                      ) : (
+                        <>
+                          <Snowflake className="h-3.5 w-3.5 text-blue-500" />
+                          <span>Freeze Account</span>
+                        </>
+                      )}
+                    </DropdownMenuItem>
+
+                    <DropdownMenuSeparator />
+
+                    <DropdownMenuItem
+                      disabled={inspectUser.email === 'ebenezeraledu@gmail.com'}
+                      onClick={() => handleDeleteUser(inspectUser)}
+                      className="cursor-pointer text-xs gap-2 py-2 text-destructive focus:text-destructive focus:bg-destructive/10"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Delete Account</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
 

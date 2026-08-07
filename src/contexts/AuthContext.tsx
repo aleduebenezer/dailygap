@@ -59,10 +59,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       console.warn("Profile database sync warning:", err);
     }
 
-    // 2. Sync to local profiles cache so Super Admin dashboard always sees all users
+    // 2. Sync to local profiles cache so Super Admin dashboard always sees all users & user metadata is kept up-to-date
     try {
       const localProfilesRaw = localStorage.getItem("dailygap_all_profiles");
-      let localProfiles: Array<{ id: string; email: string; created_at: string; last_sign_in_at: string }> = [];
+      let localProfiles: Array<any> = [];
       if (localProfilesRaw) {
         try {
           localProfiles = JSON.parse(localProfilesRaw);
@@ -71,18 +71,50 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         }
       }
       const idx = localProfiles.findIndex((p) => p.id === u.id || p.email === u.email);
-      const profileItem = {
-        id: u.id,
-        email: u.email,
-        created_at: u.created_at || new Date().toISOString(),
-        last_sign_in_at: new Date().toISOString(),
-      };
+      let updatedMetadata = { ...(u.user_metadata || {}) };
+
       if (idx >= 0) {
-        localProfiles[idx] = { ...localProfiles[idx], ...profileItem };
+        const storedProfile = localProfiles[idx];
+        if (storedProfile.account_frozen !== undefined) {
+          updatedMetadata.account_frozen = storedProfile.account_frozen;
+        }
+        if (storedProfile.ai_restricted !== undefined) {
+          updatedMetadata.ai_restricted = storedProfile.ai_restricted;
+        }
+        if (storedProfile.appeal !== undefined) {
+          updatedMetadata.appeal = storedProfile.appeal;
+        }
+
+        localProfiles[idx] = {
+          ...storedProfile,
+          id: u.id,
+          email: u.email,
+          last_sign_in_at: new Date().toISOString(),
+          account_frozen: updatedMetadata.account_frozen,
+          ai_restricted: updatedMetadata.ai_restricted,
+          appeal: updatedMetadata.appeal,
+        };
       } else {
-        localProfiles.push(profileItem);
+        localProfiles.push({
+          id: u.id,
+          email: u.email,
+          created_at: u.created_at || new Date().toISOString(),
+          last_sign_in_at: new Date().toISOString(),
+          account_frozen: updatedMetadata.account_frozen || false,
+          ai_restricted: updatedMetadata.ai_restricted || false,
+          appeal: updatedMetadata.appeal || null,
+        });
       }
       localStorage.setItem("dailygap_all_profiles", JSON.stringify(localProfiles));
+
+      // Update user state if metadata flags changed
+      if (
+        updatedMetadata.account_frozen !== u.user_metadata?.account_frozen ||
+        updatedMetadata.ai_restricted !== u.user_metadata?.ai_restricted ||
+        updatedMetadata.appeal !== u.user_metadata?.appeal
+      ) {
+        setUser((prev) => prev ? { ...prev, user_metadata: updatedMetadata } : prev);
+      }
     } catch (err) {
       console.warn("Local profile cache notice:", err);
     }

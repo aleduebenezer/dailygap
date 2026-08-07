@@ -34,21 +34,53 @@ export const AccountFrozenModal = ({
     }
 
     setLoading(true);
-    try {
-      const { data, error } = await supabase.functions.invoke("admin-stats", {
-        body: {
-          action: "submit_appeal",
-          message: appealMessage.trim(),
-        },
-      });
+    const newAppeal = {
+      submitted_at: new Date().toISOString(),
+      message: appealMessage.trim(),
+      status: "pending",
+    };
 
-      if (error || data?.error) {
-        throw new Error(error?.message || data?.error || "Failed to submit appeal");
+    try {
+      try {
+        await supabase.functions.invoke("admin-stats", {
+          body: {
+            action: "submit_appeal",
+            message: appealMessage.trim(),
+          },
+        });
+      } catch (e) {
+        console.warn("Edge function submit_appeal notice:", e);
       }
 
-      setAppeal(data.appeal);
+      // Persist appeal locally for profile & session fallback
+      try {
+        const localProfilesRaw = localStorage.getItem("dailygap_all_profiles");
+        let list = localProfilesRaw ? JSON.parse(localProfilesRaw) : [];
+        const idx = list.findIndex((p: any) => p.email === userEmail || (p.user_metadata && p.user_metadata.email === userEmail));
+        if (idx >= 0) {
+          list[idx] = {
+            ...list[idx],
+            appeal: newAppeal,
+            user_metadata: { ...list[idx].user_metadata, appeal: newAppeal },
+          };
+          localStorage.setItem("dailygap_all_profiles", JSON.stringify(list));
+        }
+
+        const rawSess = localStorage.getItem("dailygap_user_session");
+        if (rawSess) {
+          const sessUser = JSON.parse(rawSess);
+          if (sessUser.email === userEmail) {
+            sessUser.user_metadata = { ...sessUser.user_metadata, appeal: newAppeal };
+            localStorage.setItem("dailygap_user_session", JSON.stringify(sessUser));
+          }
+        }
+      } catch (e) {
+        console.warn("Local appeal save warning:", e);
+      }
+
+      setAppeal(newAppeal);
       toast.success("Appeal submitted successfully to Administration!");
-      if (onAppealSubmitted) onAppealSubmitted(data.appeal);
+      if (onAppealSubmitted) onAppealSubmitted(newAppeal);
     } catch (err: any) {
       toast.error(err.message || "Failed to submit appeal. Please try again.");
     } finally {

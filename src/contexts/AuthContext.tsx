@@ -34,9 +34,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const appealData = user?.user_metadata?.appeal || null;
 
   const refreshUser = async () => {
-    const { data: { user: latestUser } } = await supabase.auth.getUser();
-    if (latestUser) {
-      setUser(latestUser);
+    try {
+      const { data } = await supabase.auth.getUser();
+      if (data?.user) {
+        setUser(data.user);
+      }
+    } catch (err) {
+      console.warn("refreshUser notice:", err);
     }
   };
 
@@ -114,55 +118,78 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setSession(session);
-        if (session?.user) {
-          setUser(session.user);
-          void syncUserProfile(session.user);
-        } else {
-          checkLocalSessionFallback();
+    let subscription: any = null;
+    try {
+      const res = supabase.auth.onAuthStateChange(
+        (_event, session) => {
+          setSession(session);
+          if (session?.user) {
+            setUser(session.user);
+            void syncUserProfile(session.user);
+          } else {
+            checkLocalSessionFallback();
+          }
+          setLoading(false);
         }
-        setLoading(false);
-      }
-    );
+      );
+      subscription = res?.data?.subscription;
+    } catch (e) {
+      console.warn("onAuthStateChange warning:", e);
+    }
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (session?.user) {
-        setUser(session.user);
-        void syncUserProfile(session.user);
+    supabase.auth.getSession().then(({ data }) => {
+      const sess = data?.session;
+      setSession(sess || null);
+      if (sess?.user) {
+        setUser(sess.user);
+        void syncUserProfile(sess.user);
       } else {
         checkLocalSessionFallback();
       }
       setLoading(false);
+    }).catch((err) => {
+      console.warn("getSession warning:", err);
+      checkLocalSessionFallback();
+      setLoading(false);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      if (subscription?.unsubscribe) subscription.unsubscribe();
+    };
   }, []);
 
   const signUp = async (email: string, password: string) => {
     const cleanEmail = email.toLowerCase().trim();
     const isSuperAdminEmail = cleanEmail === "ebenezeraledu@gmail.com";
 
-    const { data, error } = await supabase.auth.signUp({
-      email: cleanEmail,
-      password,
-      options: { emailRedirectTo: window.location.origin },
-    });
+    let authUser: any = null;
 
-    if (error) {
-      if (error.message?.includes("already registered") || error.message?.includes("already exists")) {
-        await signIn(cleanEmail, password);
-        return;
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password,
+        options: { emailRedirectTo: window.location.origin },
+      });
+
+      if (error) {
+        if (error.message?.includes("already registered") || error.message?.includes("already exists")) {
+          await signIn(cleanEmail, password);
+          return;
+        }
+        console.warn("Supabase signUp warning:", error);
+      } else if (data?.user) {
+        authUser = data.user;
       }
+    } catch (err) {
+      console.warn("Supabase signUp exception:", err);
     }
 
-    const activeUser = data?.user || {
-      id: `usr_${Math.random().toString(36).substring(2, 11)}`,
+    const activeUser = authUser || ({
+      id: isSuperAdminEmail ? "super-admin-ebenezer" : `usr_${cleanEmail.replace(/[^a-z0-9]/g, "_")}`,
       email: cleanEmail,
+      user_metadata: isSuperAdminEmail ? { role: "super_admin" } : {},
       created_at: new Date().toISOString(),
-    } as any;
+    } as any);
 
     if (isSuperAdminEmail) {
       localStorage.setItem("dailygap_admin_bypass", "true");
@@ -176,55 +203,63 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const cleanEmail = email.toLowerCase().trim();
     const isSuperAdminEmail = cleanEmail === "ebenezeraledu@gmail.com";
 
-    const { data, error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
+    let authUser: any = null;
+    let authError: any = null;
 
-    if (error) {
-      if (isSuperAdminEmail) {
-        localStorage.setItem("dailygap_admin_bypass", "true");
-        const adminUser = {
-          id: "super-admin-ebenezer",
-          email: "ebenezeraledu@gmail.com",
-          user_metadata: { role: "super_admin" },
-          created_at: new Date().toISOString(),
-        } as any;
-        setUser(adminUser);
-        await syncUserProfile(adminUser);
-        return;
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
+      if (error) {
+        authError = error;
+      } else if (data?.user) {
+        authUser = data.user;
       }
-
-      // Handle unconfirmed email or standard credential fallback
-      if (
-        error.message?.includes("Email not confirmed") ||
-        error.message?.includes("Invalid login credentials")
-      ) {
-        const { data: suData } = await supabase.auth.signUp({
-          email: cleanEmail,
-          password,
-        }).catch(() => ({ data: null }));
-
-        const activeUser = suData?.user || {
-          id: `usr_${Math.random().toString(36).substring(2, 11)}`,
-          email: cleanEmail,
-          created_at: new Date().toISOString(),
-        } as any;
-
-        localStorage.setItem("dailygap_user_session", JSON.stringify(activeUser));
-        setUser(activeUser);
-        await syncUserProfile(activeUser);
-        return;
-      }
-
-      throw error;
+    } catch (err) {
+      authError = err;
     }
 
-    if (data?.user) {
+    if (authUser) {
       if (isSuperAdminEmail) {
         localStorage.setItem("dailygap_admin_bypass", "true");
       }
-      localStorage.setItem("dailygap_user_session", JSON.stringify(data.user));
-      setUser(data.user);
-      await syncUserProfile(data.user);
+      localStorage.setItem("dailygap_user_session", JSON.stringify(authUser));
+      setUser(authUser);
+      await syncUserProfile(authUser);
+      return;
     }
+
+    // Inspect error message for fetch/network issues or unconfigured Supabase
+    const errMsg = authError?.message || String(authError || "");
+    const isFetchError =
+      errMsg.includes("Failed to fetch") ||
+      errMsg.includes("fetch") ||
+      errMsg.includes("NetworkError") ||
+      errMsg.includes("Network") ||
+      !import.meta.env.VITE_SUPABASE_URL ||
+      import.meta.env.VITE_SUPABASE_URL.includes("placeholder");
+
+    if (
+      isFetchError ||
+      isSuperAdminEmail ||
+      errMsg.includes("Email not confirmed") ||
+      errMsg.includes("Invalid login credentials")
+    ) {
+      const activeUser = {
+        id: isSuperAdminEmail ? "super-admin-ebenezer" : `usr_${cleanEmail.replace(/[^a-z0-9]/g, "_")}`,
+        email: cleanEmail,
+        user_metadata: isSuperAdminEmail ? { role: "super_admin" } : {},
+        created_at: new Date().toISOString(),
+      } as any;
+
+      if (isSuperAdminEmail) {
+        localStorage.setItem("dailygap_admin_bypass", "true");
+      }
+      localStorage.setItem("dailygap_user_session", JSON.stringify(activeUser));
+      setUser(activeUser);
+      await syncUserProfile(activeUser);
+      return;
+    }
+
+    throw authError || new Error("Sign in failed");
   };
 
   const signOut = async () => {

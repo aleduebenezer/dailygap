@@ -2,8 +2,18 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from './types';
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://placeholder-project.supabase.co';
-const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'placeholder-key';
+const rawUrl = import.meta.env.VITE_SUPABASE_URL;
+const rawKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
+export const isSupabaseConfigured = Boolean(
+  rawUrl &&
+  rawKey &&
+  !rawUrl.includes("placeholder") &&
+  !rawKey.includes("placeholder")
+);
+
+const SUPABASE_URL = rawUrl || 'https://placeholder-project.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = rawKey || 'placeholder-key';
 
 // Import the supabase client like this:
 // import { supabase } from "@/integrations/supabase/client";

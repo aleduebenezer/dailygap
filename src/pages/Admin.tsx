@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Logo } from "@/components/Logo";
+import { ProfileAvatarMenu } from "@/components/ProfileAvatarMenu";
 import {
   ResponsiveContainer,
   AreaChart,
@@ -863,6 +864,7 @@ export default function Admin() {
               {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
               Refresh
             </Button>
+            <ProfileAvatarMenu />
             <Button
               variant="ghost"
               size="sm"

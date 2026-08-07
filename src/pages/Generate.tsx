@@ -6,6 +6,7 @@ import { Logo } from "@/components/Logo";
 import { handleAiError } from "@/lib/handleAiError";
 import { Button } from "@/components/ui/button";
 import { SEO } from "@/components/SEO";
+import { ProfileAvatarMenu } from "@/components/ProfileAvatarMenu";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -197,12 +198,15 @@ const Generate = () => {
         path="/generate"
       />
       <header className="flex items-center justify-between px-6 py-4 max-w-5xl mx-auto">
-        <Button variant="ghost" className="gap-2" onClick={() => navigate("/")}>
-          <ArrowLeft className="h-4 w-4" /> Back
+        <Button variant="ghost" className="gap-2" onClick={() => navigate("/dashboard")}>
+          <ArrowLeft className="h-4 w-4" /> Back to Dashboard
         </Button>
-        <div className="flex items-center gap-2">
-          <Logo className="h-7 w-7" />
-          <span className="font-display text-lg font-bold text-foreground">Daily Gap</span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Logo className="h-7 w-7" />
+            <span className="font-display text-lg font-bold text-foreground">Daily Gap</span>
+          </div>
+          {user && <ProfileAvatarMenu />}
         </div>
       </header>
 

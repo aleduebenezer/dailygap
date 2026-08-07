@@ -23,6 +23,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { getHashtagsEnabled } from "@/lib/userPreferences";
+import { ProfileAvatarMenu } from "@/components/ProfileAvatarMenu";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -521,9 +522,11 @@ const Dashboard = () => {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <Button variant="ghost" size="icon" onClick={handleLogout} className="rounded-full" aria-label="Sign out">
-            <LogOut className="h-5 w-5" />
-          </Button>
+          <ProfileAvatarMenu
+            calendarId={selectedCalendar?.id || null}
+            calendarNiche={selectedCalendar?.niche || null}
+            onOpenEditCalendar={() => setEditCalendarOpen(true)}
+          />
         </div>
       </header>
 
@@ -539,72 +542,75 @@ const Dashboard = () => {
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
             {/* Sidebar */}
             <div className="lg:col-span-1 space-y-3" data-tour="calendars-sidebar">
-              <h3 className="font-display text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2">Your Calendars</h3>
-              {calendars.map((cal) => (
-                <div
-                  key={cal.id}
-                  className={`w-full text-left glass rounded-xl p-4 transition-all flex items-start justify-between gap-2 ${
-                    selectedCalendar?.id === cal.id ? "glow-border ring-2 ring-primary/30" : "hover:bg-card/90"
-                  }`}
-                >
-                  <button
-                    className="flex-1 text-left"
-                    onClick={() => {
-                      setSelectedCalendar(cal);
-                      if (cal.posts.length > 0) {
-                        setCurrentMonth(new Date(cal.start_date));
-                      }
-                    }}
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="font-display text-xs font-semibold text-muted-foreground uppercase tracking-wider">Your Calendars</h3>
+                <span className="text-[10px] font-medium text-muted-foreground bg-muted/60 px-2 py-0.5 rounded-full">
+                  {calendars.length}
+                </span>
+              </div>
+
+              {/* Compressed Scrollable Calendar List */}
+              <div className="max-h-64 overflow-y-auto pr-1 space-y-1.5">
+                {calendars.map((cal) => (
+                  <div
+                    key={cal.id}
+                    className={`w-full text-left glass rounded-lg px-3 py-2 transition-all flex items-center justify-between gap-2 border ${
+                      selectedCalendar?.id === cal.id
+                        ? "border-primary/50 bg-primary/10 shadow-sm ring-1 ring-primary/30"
+                        : "border-border/40 hover:bg-card/90"
+                    }`}
                   >
-                    <div className={`font-medium text-sm ${cal.frozen ? "text-muted-foreground line-through" : "text-foreground"}`}>{cal.niche}</div>
-                    <div className="text-muted-foreground text-xs mt-1">
-                      {cal.posts.length} posts • {new Date(cal.created_at).toLocaleDateString()}
-                      {cal.frozen && <span className="ml-1 text-primary/60">(Frozen)</span>}
-                    </div>
-                  </button>
+                    <button
+                      className="flex-1 text-left min-w-0"
+                      onClick={() => {
+                        setSelectedCalendar(cal);
+                        if (cal.posts.length > 0) {
+                          setCurrentMonth(new Date(cal.start_date));
+                        }
+                      }}
+                    >
+                      <div className={`font-semibold text-xs truncate ${cal.frozen ? "text-muted-foreground line-through" : "text-foreground"}`}>
+                        {cal.niche}
+                      </div>
+                      <div className="text-muted-foreground text-[10px] truncate mt-0.5">
+                        {cal.posts.length} posts • {new Date(cal.created_at).toLocaleDateString()}
+                        {cal.frozen && <span className="ml-1 text-primary/60">(Frozen)</span>}
+                      </div>
+                    </button>
 
-                  {/* Niche more menu */}
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label="Calendar actions">
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-40">
-                      <DropdownMenuItem onClick={() => {
-                        setEditNicheValue(cal.niche);
-                        setEditTab("rename");
-                        setExtendDays(7);
-                        setRegenMode("keep");
-                        setRegenStartDate(cal.start_date);
-                        setRegenNumDays(Math.max(1, (cal.posts || []).length || 10));
-                        setEditNicheDialog(cal);
-                      }}>
-                        <Pencil className="h-4 w-4 mr-2" /> Edit
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setDeleteNicheDialog(cal)} className="text-destructive focus:text-destructive">
-                        <Trash2 className="h-4 w-4 mr-2" /> Delete
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => handleShareNiche(cal)}>
-                        <Share2 className="h-4 w-4 mr-2" /> Share
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => handleFreezeNiche(cal)}>
-                        <Snowflake className="h-4 w-4 mr-2" /> {cal.frozen ? "Unfreeze" : "Freeze"}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              ))}
-
-              <Button
-                variant="glass"
-                size="sm"
-                className="w-full justify-start gap-2 mt-2"
-                onClick={() => setEditCalendarOpen(true)}
-                disabled={!selectedCalendar}
-              >
-                <Settings2 className="h-4 w-4" /> Edit Calendar
-              </Button>
+                    {/* Niche more menu */}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground" aria-label="Calendar actions">
+                          <MoreHorizontal className="h-3.5 w-3.5" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-40">
+                        <DropdownMenuItem onClick={() => {
+                          setEditNicheValue(cal.niche);
+                          setEditTab("rename");
+                          setExtendDays(7);
+                          setRegenMode("keep");
+                          setRegenStartDate(cal.start_date);
+                          setRegenNumDays(Math.max(1, (cal.posts || []).length || 10));
+                          setEditNicheDialog(cal);
+                        }}>
+                          <Pencil className="h-4 w-4 mr-2" /> Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setDeleteNicheDialog(cal)} className="text-destructive focus:text-destructive">
+                          <Trash2 className="h-4 w-4 mr-2" /> Delete
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleShareNiche(cal)}>
+                          <Share2 className="h-4 w-4 mr-2" /> Share
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleFreezeNiche(cal)}>
+                          <Snowflake className="h-4 w-4 mr-2" /> {cal.frozen ? "Unfreeze" : "Freeze"}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                ))}
+              </div>
 
               {user && <ImageGallery userId={user.id} />}
 

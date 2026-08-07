@@ -62,9 +62,9 @@ const Landing = () => {
           transition={{ duration: 0.6 }}
           className="space-y-6"
         >
-          <h1 className="font-display text-4xl md:text-6xl font-bold leading-tight">
+          <h1 className="font-display text-4xl md:text-6xl font-bold leading-tight tracking-tight">
             Your LinkedIn,{" "}
-            <span className="gradient-text">on autopilot.</span>
+            <span className="text-primary font-bold">on autopilot.</span>
           </h1>
           <p className="text-muted-foreground text-lg md:text-xl max-w-xl mx-auto">
             Generate a month of trending, on-brand LinkedIn posts — matched to your voice, niche, and schedule.
@@ -109,7 +109,7 @@ const Landing = () => {
             { num: "Your", label: "Writing style" },
           ].map((item) => (
             <div key={item.label}>
-              <div className="font-display text-2xl font-bold gradient-text">{item.num}</div>
+              <div className="font-display text-2xl font-bold text-primary">{item.num}</div>
               <div className="text-muted-foreground text-sm mt-1">{item.label}</div>
             </div>
           ))}

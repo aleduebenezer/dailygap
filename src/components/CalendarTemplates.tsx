@@ -101,15 +101,15 @@ const CalendarTemplates = ({ selectedTemplate, onSelectTemplate }: CalendarTempl
       <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
         Templates
       </label>
-      <div className="grid grid-cols-3 gap-2 mt-2">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 mt-2">
         {TEMPLATES.map((t) => (
           <button
             key={t.id}
             onClick={() => onSelectTemplate(t)}
-            className={`relative rounded-lg overflow-hidden border-2 transition-all aspect-square ${
+            className={`relative rounded-xl overflow-hidden border-2 transition-all aspect-square text-left focus:outline-none ${
               selectedTemplate === t.id
-                ? "border-primary ring-2 ring-primary/30 scale-105"
-                : "border-transparent hover:border-muted-foreground/30"
+                ? "border-primary ring-2 ring-primary/30 scale-[1.02] shadow-sm"
+                : "border-border/60 hover:border-muted-foreground/40 bg-card"
             }`}
           >
             {t.preview ? (
@@ -121,15 +121,17 @@ const CalendarTemplates = ({ selectedTemplate, onSelectTemplate }: CalendarTempl
               />
             ) : (
               <div className="w-full h-full bg-card flex items-center justify-center">
-                <span className="text-[10px] text-muted-foreground font-medium">Default</span>
+                <span className="text-xs text-muted-foreground font-medium">Default</span>
               </div>
             )}
             {selectedTemplate === t.id && (
-              <div className="absolute inset-0 bg-primary/20 flex items-center justify-center">
-                <Check className="h-4 w-4 text-primary-foreground drop-shadow-md" />
+              <div className="absolute inset-0 bg-primary/20 backdrop-blur-[1px] flex items-center justify-center">
+                <div className="h-6 w-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center shadow-md">
+                  <Check className="h-3.5 w-3.5 stroke-[3]" />
+                </div>
               </div>
             )}
-            <span className="absolute bottom-0 left-0 right-0 text-[9px] font-medium text-center py-0.5 bg-background/80 text-foreground">
+            <span className="absolute bottom-0 left-0 right-0 text-[10px] sm:text-xs font-medium text-center py-1 bg-background/90 text-foreground backdrop-blur-xs border-t border-border/40 truncate px-1">
               {t.name}
             </span>
           </button>

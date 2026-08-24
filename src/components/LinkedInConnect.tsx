@@ -164,7 +164,6 @@ const LinkedInConnect = ({ userId, calendarId, calendarNiche }: Props) => {
 
   const disconnect = async () => {
     if (!connection) return;
-    if (!confirm("Disconnect LinkedIn? Auto-posting will stop.")) return;
     const { error } = await supabase
       .from("linkedin_connections")
       .delete()

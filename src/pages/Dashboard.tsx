@@ -3,7 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Sun, Moon, Plus, Sparkles, LogOut, ChevronLeft, ChevronRight, X, Copy,
-  ChevronDown, Trash2, MoreHorizontal, Pencil, Share2, Snowflake, Settings2, Clock, Check, Wand2, ShieldCheck
+  ChevronDown, Trash2, MoreHorizontal, Pencil, Share2, Snowflake, Settings2, Clock, Check, Wand2, ShieldCheck,
+  Menu, Settings, User
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { handleAiError } from "@/lib/handleAiError";
@@ -19,11 +20,29 @@ import { SEO } from "@/components/SEO";
 import ImageGallery from "@/components/ImageGallery";
 import LinkedInConnect from "@/components/LinkedInConnect";
 import OnboardingTour from "@/components/OnboardingTour";
+import { NotificationCenter, sendNotification } from "@/components/NotificationCenter";
+import { SearchBar } from "@/components/SearchBar";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { getHashtagsEnabled } from "@/lib/userPreferences";
+import {
+  getLocalCalendars,
+  updateLocalCalendar,
+  deleteLocalCalendar,
+  clearLocalCalendars,
+} from "@/lib/localCalendarStore";
+import { recordAiUsage } from "@/lib/aiUsageStore";
 import { ProfileAvatarMenu } from "@/components/ProfileAvatarMenu";
+import { SettingsModal } from "@/components/SettingsModal";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -95,6 +114,11 @@ const Dashboard = () => {
   // Edit calendar dialog state
   const [editCalendarOpen, setEditCalendarOpen] = useState(false);
 
+  // Mobile menu and settings state
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
+  const [mobileSettingsTab, setMobileSettingsTab] = useState<string | null>(null);
+
   // Inline post edit state
   const [isEditingPost, setIsEditingPost] = useState(false);
   const [editPostContent, setEditPostContent] = useState("");
@@ -114,19 +138,92 @@ const Dashboard = () => {
   const [createPostSource, setCreatePostSource] = useState<"ai" | "manual">("manual");
 
   useEffect(() => {
-    if (!user) { navigate("/auth"); return; }
+    const pendingGenData = sessionStorage.getItem("pendingGenerateData") || localStorage.getItem("pendingGenerateData");
+    if (pendingGenData) {
+      try {
+        const parsed = JSON.parse(pendingGenData);
+        if (parsed?.posts?.length || parsed?.niche) {
+          navigate("/generate", { state: parsed });
+          return;
+        }
+      } catch {
+        navigate("/generate");
+        return;
+      }
+    }
+
     fetchCalendars();
   }, [user]);
 
   const fetchCalendars = async () => {
-    const { data, error } = await supabase
-      .from("calendars")
-      .select("*")
-      .eq("user_id", user!.id)
-      .order("created_at", { ascending: false });
-    if (error) { toast.error("Failed to load calendars"); return; }
-    setCalendars(data as any);
-    if (data.length > 0 && !selectedCalendar) setSelectedCalendar(data[0] as any);
+    if (!user) return;
+    let dbCals: CalendarEntry[] = [];
+    try {
+      const { data } = await supabase
+        .from("calendars")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+      if (data) dbCals = data as any;
+    } catch (e) {
+      console.warn("Error loading DB calendars:", e);
+    }
+
+    const localCals = getLocalCalendars(user.id);
+
+    const combined: CalendarEntry[] = [];
+    const seenIds = new Set<string>();
+    const seenSignatures = new Set<string>();
+
+    const getSignature = (c: CalendarEntry) => {
+      const nicheStr = (c.niche || "").trim().toLowerCase();
+      const startDateStr = (c.start_date || "").trim();
+      const posts = Array.isArray(c.posts) ? c.posts : [];
+      const firstPost = posts[0] ? (posts[0].date || "") + "_" + (posts[0].content || "").substring(0, 20) : "";
+      return `${c.user_id || user.id}_${nicheStr}_${startDateStr}_${posts.length}_${firstPost}`;
+    };
+
+    // 1. Process DB calendars first (authoritative)
+    dbCals.forEach((c) => {
+      if (!c.id) return;
+      const sig = getSignature(c);
+      if (!seenIds.has(c.id) && !seenSignatures.has(sig)) {
+        seenIds.add(c.id);
+        seenSignatures.add(sig);
+        combined.push(c);
+      }
+    });
+
+    // 2. Process local calendars (deduplicate against DB & other local)
+    const localCalsToRemove: string[] = [];
+    localCals.forEach((c) => {
+      if (!c.id) return;
+      const sig = getSignature(c);
+      if (seenIds.has(c.id) || seenSignatures.has(sig)) {
+        localCalsToRemove.push(c.id);
+      } else {
+        seenIds.add(c.id);
+        seenSignatures.add(sig);
+        combined.push(c);
+      }
+    });
+
+    // Clean up local duplicates from localStorage
+    localCalsToRemove.forEach((idToRemove) => {
+      deleteLocalCalendar(user.id, idToRemove);
+    });
+
+    combined.sort(
+      (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+    );
+
+    setCalendars(combined);
+    setSelectedCalendar((prev) => {
+      if (prev && combined.some((c) => c.id === prev.id)) {
+        return combined.find((c) => c.id === prev.id) || prev;
+      }
+      return combined.length > 0 ? combined[0] : null;
+    });
   };
 
   const getDaysInMonth = (date: Date) => {
@@ -152,7 +249,6 @@ const Dashboard = () => {
   const getPostsForDateStr = (dateStr: string) => {
     const allPosts: (PostEntry & { calendarId: string; originalIndex: number })[] = [];
     calendars.forEach((cal) => {
-      if (cal.frozen) return;
       (cal.posts || []).forEach((p, idx) => {
         if (p.date === dateStr) {
           allPosts.push({ ...p, niche: p.niche || cal.niche, calendarId: cal.id, originalIndex: idx });
@@ -175,30 +271,77 @@ const Dashboard = () => {
     navigate("/");
   };
 
-  // Clear all calendars with password confirmation
+  const meta = user?.user_metadata || {};
+  const cachedProfileRaw = user ? localStorage.getItem(`dailygap_profile_${user.id}`) : null;
+  let cachedProfile: any = {};
+  if (cachedProfileRaw) {
+    try {
+      cachedProfile = JSON.parse(cachedProfileRaw);
+    } catch {
+      cachedProfile = {};
+    }
+  }
+
+  const username =
+    meta.username ||
+    cachedProfile.username ||
+    meta.full_name ||
+    user?.email?.split("@")[0] ||
+    "User";
+
+  const email = user?.email || "";
+  const avatarUrl = meta.avatar_url || cachedProfile.avatar_url || "";
+
+  const initials = username
+    ? username.slice(0, 2).toUpperCase()
+    : email
+    ? email.slice(0, 2).toUpperCase()
+    : "DG";
+
+  const isSuperAdmin = user?.email === "ebenezeraledu@gmail.com";
+
+  const handleSelectSearchPost = (calendar: CalendarEntry, post: PostEntry, dateStr: string) => {
+    setSelectedCalendar(calendar);
+    if (dateStr) {
+      const d = new Date(dateStr + "T00:00:00");
+      if (!isNaN(d.getTime())) {
+        setCurrentMonth(d);
+      }
+    }
+    if (calendar.frozen) {
+      calendar.frozen = false;
+      setCalendars((prev) =>
+        prev.map((c) => (c.id === calendar.id ? { ...c, frozen: false } : c))
+      );
+    }
+    const dayPosts = getPostsForDateStr(dateStr);
+    let targetIdx = dayPosts.findIndex(
+      (p) => p.calendarId === calendar.id && p.content === post.content
+    );
+    if (targetIdx === -1) {
+      targetIdx = dayPosts.findIndex((p) => p.calendarId === calendar.id);
+    }
+    if (targetIdx === -1) {
+      targetIdx = 0;
+    }
+    setExpandedPost({ date: dateStr, index: targetIdx >= 0 ? targetIdx : 0 });
+  };
+
+  // Clear all calendars
   const handleClearAll = async () => {
-    if (!clearPassword.trim()) { toast.error("Please enter your password"); return; }
     setClearLoading(true);
     try {
-      // Verify password by re-signing in
-      const { error: authError } = await supabase.auth.signInWithPassword({
-        email: user!.email!,
-        password: clearPassword,
-      });
-      if (authError) { toast.error("Incorrect password"); setClearLoading(false); return; }
-
-      // Delete all calendars
-      const { error } = await supabase
-        .from("calendars")
-        .delete()
-        .eq("user_id", user!.id);
-      if (error) { toast.error("Failed to clear calendars"); setClearLoading(false); return; }
+      if (user?.id) {
+        await supabase.from("calendars").delete().eq("user_id", user.id).catch(() => {});
+        clearLocalCalendars(user.id);
+      }
 
       setCalendars([]);
       setSelectedCalendar(null);
       setShowClearDialog(false);
       setClearPassword("");
       toast.success("All calendars cleared");
+      sendNotification("Calendars Cleared", "All content calendars and posts have been cleared.", "alert");
     } catch {
       toast.error("Something went wrong");
     }
@@ -211,12 +354,17 @@ const Dashboard = () => {
     setEditLoading(true);
     const newName = editNicheValue.trim();
     const updatedPosts = (editNicheDialog.posts || []).map((p) => ({ ...p, niche: newName }));
-    const { error } = await supabase
+    
+    await supabase
       .from("calendars")
       .update({ niche: newName, posts: updatedPosts as any })
       .eq("id", editNicheDialog.id);
+
+    if (user?.id) {
+      updateLocalCalendar(user.id, editNicheDialog.id, { niche: newName, posts: updatedPosts });
+    }
+
     setEditLoading(false);
-    if (error) { toast.error("Failed to update niche"); return; }
     toast.success("Niche updated");
     setEditNicheDialog(null);
     fetchCalendars();
@@ -252,6 +400,10 @@ const Dashboard = () => {
         .eq("id", editNicheDialog.id);
       if (upErr) throw upErr;
       toast.success(`Added ${tagged.length} more posts`);
+      sendNotification("Calendar Extended", `Added ${tagged.length} posts to "${editNicheDialog.niche}"`, "success");
+      if (user?.id) {
+        void recordAiUsage(user.id, tagged.length);
+      }
       setEditNicheDialog(null);
       fetchCalendars();
     } catch (e: any) {
@@ -292,6 +444,10 @@ const Dashboard = () => {
         .eq("id", editNicheDialog.id);
       if (upErr) throw upErr;
       toast.success("Calendar regenerated");
+      sendNotification("Calendar Regenerated", `Regenerated calendar "${editNicheDialog.niche}"`, "ai");
+      if (user?.id) {
+        void recordAiUsage(user.id, tagged.length);
+      }
       setEditNicheDialog(null);
       fetchCalendars();
     } catch (e: any) {
@@ -302,11 +458,11 @@ const Dashboard = () => {
 
   const handleDeleteNiche = async () => {
     if (!deleteNicheDialog) return;
-    const { error } = await supabase
+    await supabase
       .from("calendars")
       .delete()
       .eq("id", deleteNicheDialog.id);
-    if (error) { toast.error("Failed to delete"); return; }
+    if (user?.id) deleteLocalCalendar(user.id, deleteNicheDialog.id);
     if (selectedCalendar?.id === deleteNicheDialog.id) setSelectedCalendar(null);
     toast.success("Calendar deleted");
     setDeleteNicheDialog(null);
@@ -327,11 +483,11 @@ const Dashboard = () => {
 
   const handleFreezeNiche = async (cal: CalendarEntry) => {
     const newFrozen = !cal.frozen;
-    const { error } = await supabase
+    await supabase
       .from("calendars")
       .update({ frozen: newFrozen } as any)
       .eq("id", cal.id);
-    if (error) { toast.error("Failed to update calendar"); return; }
+    if (user?.id) updateLocalCalendar(user.id, cal.id, { frozen: newFrozen });
     toast.success(newFrozen ? "Calendar frozen — posts hidden" : "Calendar unfrozen — posts visible");
     fetchCalendars();
   };
@@ -352,12 +508,12 @@ const Dashboard = () => {
       }
       return p;
     });
-    const { error } = await supabase
+    await supabase
       .from("calendars")
       .update({ posts: updatedPosts as any })
       .eq("id", targetCal.id);
+    if (user?.id) updateLocalCalendar(user.id, targetCal.id, { posts: updatedPosts });
     setSavingPost(false);
-    if (error) { toast.error("Failed to save post"); return; }
     toast.success("Post updated");
     setIsEditingPost(false);
     await fetchCalendars();
@@ -371,12 +527,12 @@ const Dashboard = () => {
     if (!targetCal) { toast.error("Could not locate post"); return; }
     setDeletingPost(true);
     const updatedPosts = (targetCal.posts || []).filter((_, idx) => idx !== originalIndex);
-    const { error } = await supabase
+    await supabase
       .from("calendars")
       .update({ posts: updatedPosts as any })
       .eq("id", targetCal.id);
+    if (user?.id) updateLocalCalendar(user.id, targetCal.id, { posts: updatedPosts });
     setDeletingPost(false);
-    if (error) { toast.error("Failed to delete post"); return; }
     toast.success("Post deleted");
     setDeletePostDialog(null);
     setExpandedPost(null);
@@ -430,12 +586,12 @@ const Dashboard = () => {
     setCreatePostSaving(true);
     const newPost = { date: createPostDate, content: createPostContent.trim(), niche: targetCal.niche, source: createPostSource };
     const updatedPosts = [...(targetCal.posts || []), newPost];
-    const { error } = await supabase
+    await supabase
       .from("calendars")
       .update({ posts: updatedPosts as any })
       .eq("id", targetCal.id);
+    if (user?.id) updateLocalCalendar(user.id, targetCal.id, { posts: updatedPosts });
     setCreatePostSaving(false);
-    if (error) { toast.error("Failed to save post"); return; }
     toast.success("Post added to calendar");
     setCreatePostDate(null);
     await fetchCalendars();
@@ -480,55 +636,107 @@ const Dashboard = () => {
         noIndex
       />
       <h1 className="sr-only">Your content calendar dashboard</h1>
-      <header className="flex items-center justify-between px-6 py-4 max-w-6xl mx-auto">
-        <div className="flex items-center gap-2">
-          <Logo className="h-7 w-7" />
-          <span className="font-display text-lg font-bold text-foreground">Daily Gap</span>
-        </div>
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={toggleTheme} className="rounded-full" aria-label="Toggle color theme">
-            {theme === "dark" ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
-          </Button>
-
-          {user?.email === "ebenezeraledu@gmail.com" && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => navigate("/admin")}
-              className="gap-1.5 text-xs font-medium border-primary/30 text-primary hover:bg-primary/10"
+      <div className="relative z-50 max-w-6xl mx-auto px-6 pt-4 pb-2">
+        <header
+          className="relative z-50 flex items-center justify-between gap-3 px-4 sm:px-6 py-3 rounded-2xl border border-border/40 backdrop-blur-md shadow-xs transition-all"
+          style={{ backgroundColor: "rgba(128, 128, 128, 0.05)" }}
+        >
+          {/* MOBILE NAV BAR (< md) */}
+          <div className="flex md:hidden items-center justify-between w-full">
+            {/* Left: Profile Picture with online indicator */}
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              className="group relative flex items-center gap-2 focus:outline-none active:scale-95 transition-transform"
+              aria-label="Open user profile menu"
             >
-              <ShieldCheck className="h-4 w-4" /> Super Admin
-            </Button>
-          )}
+              <div className="relative">
+                <Avatar className="h-9 w-9 border border-rose-200/80 dark:border-rose-900/60 shadow-2xs">
+                  <AvatarImage src={avatarUrl} alt={username} />
+                  <AvatarFallback className="bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300 font-bold text-xs">
+                    {initials}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
+              </div>
+            </button>
 
-          {/* New Calendar dropdown */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="hero" size="sm" className="gap-2">
-                <Plus className="h-4 w-4" /> New Calendar
-                <ChevronDown className="h-3 w-3 ml-1" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => navigate("/generate")}>
-                <Plus className="h-4 w-4 mr-2" /> Create New Calendar
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onClick={() => setShowClearDialog(true)}
+            {/* Right: Notification Center & Hamburger Menu Icon */}
+            <div className="flex items-center gap-1.5">
+              <NotificationCenter userId={user?.id} />
+
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setMobileMenuOpen(true)}
+                className="rounded-full hover:bg-muted/60 text-foreground h-9 w-9"
+                aria-label="Open navigation menu"
               >
-                <Trash2 className="h-4 w-4 mr-2" /> Clear All Calendars
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                <Menu className="h-5 w-5" />
+              </Button>
+            </div>
+          </div>
 
-          <ProfileAvatarMenu
-            calendarId={selectedCalendar?.id || null}
-            calendarNiche={selectedCalendar?.niche || null}
-            onOpenEditCalendar={() => setEditCalendarOpen(true)}
-          />
-        </div>
-      </header>
+          {/* DESKTOP NAV BAR (>= md) */}
+          <div className="hidden md:flex items-center justify-between w-full gap-3">
+            <div className="flex items-center gap-2 shrink-0">
+              <Logo className="h-7 w-7" />
+            </div>
+
+            {/* Search Bar in Top Nav Bar */}
+            <div className="flex-1 max-w-xs sm:max-w-md mx-2">
+              <SearchBar calendars={calendars} onSelectPost={handleSelectSearchPost} />
+            </div>
+
+            <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+              {/* Notification Icon */}
+              <NotificationCenter userId={user?.id} />
+
+              <Button variant="ghost" size="icon" onClick={toggleTheme} className="rounded-full" aria-label="Toggle color theme">
+                {theme === "dark" ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+              </Button>
+
+              {isSuperAdmin && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate("/admin")}
+                  className="gap-1.5 text-xs font-medium border-primary/30 text-primary hover:bg-primary/10 hidden md:inline-flex"
+                >
+                  <ShieldCheck className="h-4 w-4" /> Super Admin
+                </Button>
+              )}
+
+              {/* New Calendar dropdown */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="hero" size="sm" className="gap-2">
+                    <Plus className="h-4 w-4" /> <span className="hidden sm:inline">New Calendar</span>
+                    <ChevronDown className="h-3 w-3 sm:ml-1" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => navigate("/generate")}>
+                    <Plus className="h-4 w-4 mr-2" /> Create New Calendar
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="text-destructive focus:text-destructive"
+                    onClick={() => setShowClearDialog(true)}
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" /> Clear All Calendars
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              <ProfileAvatarMenu
+                calendarId={selectedCalendar?.id || null}
+                calendarNiche={selectedCalendar?.niche || null}
+                onOpenEditCalendar={() => setEditCalendarOpen(true)}
+              />
+            </div>
+          </div>
+        </header>
+      </div>
 
       <main className="max-w-6xl mx-auto px-6 pb-20">
         {calendars.length === 0 ? (
@@ -540,8 +748,12 @@ const Dashboard = () => {
           </motion.div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-            {/* Sidebar */}
-            <div className="lg:col-span-1 space-y-3" data-tour="calendars-sidebar">
+            {/* Sidebar with 0.05 opacity light grey background */}
+            <div
+              className="lg:col-span-1 space-y-3 p-4 rounded-2xl border border-border/40 transition-all"
+              style={{ backgroundColor: "rgba(128, 128, 128, 0.05)" }}
+              data-tour="calendars-sidebar"
+            >
               <div className="flex items-center justify-between mb-1">
                 <h3 className="font-display text-xs font-semibold text-muted-foreground uppercase tracking-wider">Your Calendars</h3>
                 <span className="text-[10px] font-medium text-muted-foreground bg-muted/60 px-2 py-0.5 rounded-full">
@@ -717,7 +929,7 @@ const Dashboard = () => {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+              className="fixed inset-0 bg-background/80 backdrop-blur-sm z-[200] flex items-center justify-center p-6"
               onClick={() => setExpandedPost(null)}
             >
               <motion.div
@@ -835,20 +1047,13 @@ const Dashboard = () => {
           <DialogHeader>
             <DialogTitle>Clear All Calendars</DialogTitle>
             <DialogDescription>
-              This will permanently delete all your calendars and posts. Enter your password to confirm.
+              This will permanently delete all your saved content calendars and posts. Are you sure you want to proceed?
             </DialogDescription>
           </DialogHeader>
-          <Input
-            type="password"
-            placeholder="Enter your password"
-            value={clearPassword}
-            onChange={(e) => setClearPassword(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleClearAll()}
-          />
           <DialogFooter>
-            <Button variant="ghost" onClick={() => { setShowClearDialog(false); setClearPassword(""); }}>Cancel</Button>
+            <Button variant="ghost" onClick={() => setShowClearDialog(false)}>Cancel</Button>
             <Button variant="destructive" onClick={handleClearAll} disabled={clearLoading}>
-              {clearLoading ? "Verifying..." : "Clear Everything"}
+              {clearLoading ? "Clearing..." : "Clear Everything"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1080,23 +1285,23 @@ const Dashboard = () => {
 
       {/* Edit Calendar dialog */}
       <Dialog open={editCalendarOpen} onOpenChange={setEditCalendarOpen}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Edit Calendar</DialogTitle>
-            <DialogDescription>
+        <DialogContent className="w-[calc(100vw-24px)] sm:max-w-2xl max-h-[85vh] overflow-y-auto overflow-x-hidden p-4 sm:p-6 rounded-2xl">
+          <DialogHeader className="text-left space-y-1 pr-8 sm:pr-10">
+            <DialogTitle className="text-base sm:text-xl font-bold text-foreground break-words">Edit Calendar</DialogTitle>
+            <DialogDescription className="text-xs sm:text-sm text-muted-foreground break-words">
               Customize your calendar's look and feel. Pick a template, tweak the colors, change the font, or add illustrations.
             </DialogDescription>
           </DialogHeader>
 
           <Tabs defaultValue="templates" className="mt-2">
-            <TabsList className="grid grid-cols-4 w-full">
-              <TabsTrigger value="templates">Templates</TabsTrigger>
-              <TabsTrigger value="color">Color</TabsTrigger>
-              <TabsTrigger value="font">Font</TabsTrigger>
-              <TabsTrigger value="illustrations">Illustrations</TabsTrigger>
+            <TabsList className="grid grid-cols-2 sm:grid-cols-4 w-full h-auto p-1 gap-1 bg-muted/60 rounded-xl">
+              <TabsTrigger value="templates" className="text-xs sm:text-sm py-2 rounded-lg data-[state=active]:shadow-xs">Templates</TabsTrigger>
+              <TabsTrigger value="color" className="text-xs sm:text-sm py-2 rounded-lg data-[state=active]:shadow-xs">Color</TabsTrigger>
+              <TabsTrigger value="font" className="text-xs sm:text-sm py-2 rounded-lg data-[state=active]:shadow-xs">Font</TabsTrigger>
+              <TabsTrigger value="illustrations" className="text-xs sm:text-sm py-2 rounded-lg data-[state=active]:shadow-xs">Illustrations</TabsTrigger>
             </TabsList>
 
-            <TabsContent value="templates" className="mt-4">
+            <TabsContent value="templates" className="mt-4 focus-visible:outline-none">
               <CalendarTemplates
                 selectedTemplate={selectedTemplateId}
                 onSelectTemplate={(t: CalendarTemplate) => {
@@ -1108,7 +1313,7 @@ const Dashboard = () => {
               />
             </TabsContent>
 
-            <TabsContent value="color" className="mt-4">
+            <TabsContent value="color" className="mt-4 focus-visible:outline-none">
               <CalendarCustomizer
                 calendarColor={calendarColor}
                 setCalendarColor={setCalendarColor}
@@ -1117,7 +1322,7 @@ const Dashboard = () => {
               />
             </TabsContent>
 
-            <TabsContent value="font" className="mt-4">
+            <TabsContent value="font" className="mt-4 focus-visible:outline-none">
               <CalendarCustomizer
                 calendarColor={calendarColor}
                 setCalendarColor={setCalendarColor}
@@ -1126,8 +1331,8 @@ const Dashboard = () => {
               />
             </TabsContent>
 
-            <TabsContent value="illustrations" className="mt-4 space-y-3">
-              <p className="text-sm text-muted-foreground">
+            <TabsContent value="illustrations" className="mt-4 space-y-3 focus-visible:outline-none">
+              <p className="text-xs sm:text-sm text-muted-foreground">
                 Upload illustrations and drag them onto your calendar to make it your own.
               </p>
               <DecorationToolbar
@@ -1140,10 +1345,11 @@ const Dashboard = () => {
             </TabsContent>
           </Tabs>
 
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setEditCalendarOpen(false)}>Cancel</Button>
+          <DialogFooter className="flex-col-reverse sm:flex-row gap-2 pt-3 sm:pt-4 border-t border-border mt-4">
+            <Button variant="ghost" className="w-full sm:w-auto h-10" onClick={() => setEditCalendarOpen(false)}>Cancel</Button>
             <Button
               variant="hero"
+              className="w-full sm:w-auto h-10 font-medium"
               onClick={() => {
                 setEditCalendarOpen(false);
                 toast.success("Calendar updated");
@@ -1154,6 +1360,183 @@ const Dashboard = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Mobile Hamburger Menu Sheet */}
+      <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
+        <SheetContent
+          side="right"
+          className="w-[88vw] max-w-sm p-0 flex flex-col justify-between border-l border-border bg-card text-card-foreground shadow-2xl z-[250]"
+        >
+          <div className="flex flex-col flex-1 overflow-y-auto">
+            {/* Header / User Profile */}
+            <div className="p-5 border-b border-border bg-muted/40 text-left">
+              <div className="flex items-center gap-3 pr-8">
+                <Avatar className="h-12 w-12 border-2 border-primary/20 shadow-xs shrink-0">
+                  <AvatarImage src={avatarUrl} alt={username} />
+                  <AvatarFallback className="bg-primary/15 text-primary font-bold text-sm">
+                    {initials}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex flex-col min-w-0">
+                  <div className="text-sm font-semibold text-foreground truncate">
+                    {username}
+                  </div>
+                  <div className="text-xs text-muted-foreground truncate">
+                    {email}
+                  </div>
+                  {isSuperAdmin && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 mt-1">
+                      <ShieldCheck className="h-3 w-3" /> Super Admin
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Content & Actions */}
+            <div className="p-5 space-y-5">
+              {/* Search Bar in Mobile Menu */}
+              <div>
+                <SearchBar
+                  calendars={calendars}
+                  onSelectPost={(calendar, post, dateStr) => {
+                    handleSelectSearchPost(calendar, post, dateStr);
+                    setMobileMenuOpen(false);
+                  }}
+                  className="w-full"
+                />
+              </div>
+
+              {/* Navigation Menu List */}
+              <div className="space-y-3">
+                {/* Primary CTA */}
+                <Button
+                  type="button"
+                  variant="hero"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    navigate("/generate");
+                  }}
+                  className="w-full justify-between h-11 px-4 rounded-xl text-sm font-medium shadow-xs"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Plus className="h-4 w-4" /> Create New Calendar
+                  </span>
+                  <ChevronRight className="h-4 w-4 opacity-70" />
+                </Button>
+
+                {/* Unified Menu Stack */}
+                <div className="rounded-xl border border-border/60 bg-card overflow-hidden divide-y divide-border/40 shadow-xs">
+                  {/* Settings */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileSettingsOpen(true);
+                      setMobileSettingsTab(null);
+                      setMobileMenuOpen(false);
+                    }}
+                    className="w-full flex items-center justify-between p-3.5 hover:bg-muted/40 transition-colors text-left group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Settings className="h-4 w-4 text-muted-foreground group-hover:text-foreground transition-colors" />
+                      <div>
+                        <div className="text-sm font-medium text-foreground">Settings</div>
+                        <div className="text-xs text-muted-foreground">Account & integrations</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-foreground transition-colors" />
+                  </button>
+
+                  {/* Theme Switcher */}
+                  <button
+                    type="button"
+                    onClick={toggleTheme}
+                    className="w-full flex items-center justify-between p-3.5 hover:bg-muted/40 transition-colors text-left"
+                  >
+                    <div className="flex items-center gap-3">
+                      {theme === "dark" ? (
+                        <Moon className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <Sun className="h-4 w-4 text-muted-foreground" />
+                      )}
+                      <div>
+                        <div className="text-sm font-medium text-foreground">Appearance</div>
+                        <div className="text-xs text-muted-foreground">Switch light or dark mode</div>
+                      </div>
+                    </div>
+                    <span className="text-xs px-2 py-0.5 rounded-md font-medium bg-muted text-muted-foreground capitalize border border-border/50">
+                      {theme}
+                    </span>
+                  </button>
+
+                  {/* Super Admin Dashboard (if authorized) */}
+                  {isSuperAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        navigate("/admin");
+                      }}
+                      className="w-full flex items-center justify-between p-3.5 hover:bg-muted/40 transition-colors text-left group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <ShieldCheck className="h-4 w-4 text-primary" />
+                        <div>
+                          <div className="text-sm font-medium text-foreground">Admin Portal</div>
+                          <div className="text-xs text-muted-foreground">Management & analytics</div>
+                        </div>
+                      </div>
+                      <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-foreground transition-colors" />
+                    </button>
+                  )}
+
+                  {/* Clear All Calendars */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      setShowClearDialog(true);
+                    }}
+                    className="w-full flex items-center justify-between p-3.5 hover:bg-destructive/10 transition-colors text-left group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                      <div>
+                        <div className="text-sm font-medium text-destructive">Clear All Calendars</div>
+                        <div className="text-xs text-muted-foreground">Remove saved calendars</div>
+                      </div>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer: Logout */}
+          <div className="p-4 border-t border-border bg-muted/40">
+            <Button
+              variant="outline"
+              className="w-full justify-center gap-2 text-destructive border-destructive/30 hover:bg-destructive/10 hover:border-destructive/50 transition-colors font-semibold text-sm h-11 rounded-xl"
+              onClick={() => {
+                setMobileMenuOpen(false);
+                handleLogout();
+              }}
+            >
+              <LogOut className="h-4 w-4" /> Log Out
+            </Button>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* Mobile Settings Modal */}
+      <SettingsModal
+        open={mobileSettingsOpen}
+        onOpenChange={setMobileSettingsOpen}
+        defaultTab={mobileSettingsTab}
+        calendarId={selectedCalendar?.id || null}
+        calendarNiche={selectedCalendar?.niche || null}
+        onOpenEditCalendar={() => setEditCalendarOpen(true)}
+      />
     </div>
   );
 };

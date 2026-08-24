@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
+import { authService } from "@/lib/authService";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -20,6 +21,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { Logo } from "@/components/Logo";
 import { ProfileAvatarMenu } from "@/components/ProfileAvatarMenu";
@@ -106,6 +117,10 @@ export default function Admin() {
   // Inspection Modal State
   const [inspectUser, setInspectUser] = useState<UserRow | null>(null);
 
+  // Deletion & Wipe Confirmation Modal States
+  const [userToDelete, setUserToDelete] = useState<UserRow | null>(null);
+  const [showWipeConfirm, setShowWipeConfirm] = useState(false);
+
   // Login form state
   const [email, setEmail] = useState("ebenezeraledu@gmail.com");
   const [password, setPassword] = useState("DailyGap#2026!AdminSecuredKey");
@@ -115,44 +130,34 @@ export default function Admin() {
     if (authLoading) return;
     if (user || adminBypass) {
       void load();
+
+      // Realtime Supabase Channel
+      const channel = supabase
+        .channel('admin-dashboard-realtime')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'calendars' }, () => void load(true))
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => void load(true))
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'ai_usage_daily' }, () => void load(true))
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'linkedin_post_log' }, () => void load(true))
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'linkedin_connections' }, () => void load(true))
+        .subscribe();
+
+      // Auto-poll every 3s for instant updates
+      const timer = setInterval(() => {
+        void load(true);
+      }, 3000);
+
+      const handleDataChange = () => void load(true);
+      window.addEventListener('storage', handleDataChange);
+      window.addEventListener('dailygap_data_changed', handleDataChange);
+
+      return () => {
+        void supabase.removeChannel(channel);
+        clearInterval(timer);
+        window.removeEventListener('storage', handleDataChange);
+        window.removeEventListener('dailygap_data_changed', handleDataChange);
+      };
     }
   }, [user, authLoading, adminBypass]);
-
-  // Execute database wipe of all non-admin accounts immediately on mount
-  useEffect(() => {
-    const performDatabaseWipe = async () => {
-      try {
-        try {
-          await supabase.functions.invoke("admin-stats", {
-            body: { action: "wipe_all_non_admin" },
-          });
-        } catch (e) {
-          console.warn("Edge function wipe notice:", e);
-        }
-
-        // Direct DB wipe for non-admin accounts
-        await Promise.allSettled([
-          supabase.from('profiles').delete().neq('email', 'ebenezeraledu@gmail.com'),
-        ]);
-
-        // Clean local profiles storage
-        try {
-          const raw = localStorage.getItem("dailygap_all_profiles");
-          if (raw) {
-            const list = JSON.parse(raw);
-            const adminOnly = list.filter((p: any) => p.email === "ebenezeraledu@gmail.com");
-            localStorage.setItem("dailygap_all_profiles", JSON.stringify(adminOnly));
-          }
-        } catch (e) {
-          console.warn("Local storage wipe notice:", e);
-        }
-      } catch (err) {
-        console.warn("Automatic database wipe error:", err);
-      }
-    };
-
-    void performDatabaseWipe();
-  }, []);
 
   const handleAdminSignIn = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -202,21 +207,18 @@ export default function Admin() {
         supabase.from('ai_usage_daily').select('user_id, usage_date, count, created_at'),
       ]);
 
-      const superAdminEmail = "ebenezeraledu@gmail.com";
-      const profs = (profiles || []).filter((p: any) => p.email === superAdminEmail || p.id === user?.id);
+      const profs = profiles || [];
       const cals = calendars || [];
       const logs = postLog || [];
       const conns = linkedinConns || [];
       const usage = aiUsage || [];
 
-      // Read local cached profiles as backup and keep only super admin
+      // Read local cached profiles as backup
       let localProfs: any[] = [];
       try {
         const raw = localStorage.getItem("dailygap_all_profiles");
         if (raw) {
-          const list = JSON.parse(raw);
-          localProfs = list.filter((p: any) => p.email === superAdminEmail || p.id === user?.id);
-          localStorage.setItem("dailygap_all_profiles", JSON.stringify(localProfs));
+          localProfs = JSON.parse(raw);
         }
       } catch {
         localProfs = [];
@@ -297,6 +299,43 @@ export default function Admin() {
         }
       }
 
+      // 1c. Populate & merge from authService registered users
+      try {
+        const authUsers = authService.getAllUsers();
+        for (const au of authUsers) {
+          if (!au.id) continue;
+          if (userMap.has(au.id)) {
+            const existing = userMap.get(au.id)!;
+            if (au.account_frozen !== undefined) existing.account_frozen = Boolean(au.account_frozen);
+            if (au.ai_restricted !== undefined) existing.ai_restricted = Boolean(au.ai_restricted);
+          } else {
+            userMap.set(au.id, {
+              user_id: au.id,
+              email: au.email,
+              created_at: au.created_at || new Date().toISOString(),
+              last_sign_in_at: au.last_sign_in_at || null,
+              ai_restricted: Boolean(au.ai_restricted),
+              account_frozen: Boolean(au.account_frozen),
+              appeal: null,
+              linkedin_connected: false,
+              linkedin_name: null,
+              calendars: 0,
+              total_posts: 0,
+              generated_posts: 0,
+              manual_posts: 0,
+              edited_posts: 0,
+              posted_success: 0,
+              posted_failed: 0,
+              success_rate: 0,
+              ai_credits_total: 0,
+              ai_usage_records: [],
+            });
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to load authService users in Admin:", e);
+      }
+
       // 2. Ensure currently authenticated user is in userMap
       if (user && !userMap.has(user.id)) {
         userMap.set(user.id, {
@@ -362,7 +401,102 @@ export default function Admin() {
         }
       }
 
-      for (const cal of cals) {
+      // Merge local AI credits into rawAiUsage & user rows
+      const mergedAiUsage = [...usage];
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith("dailygap_ai_credits_")) {
+            const uid = key.replace("dailygap_ai_credits_", "").trim();
+            const raw = localStorage.getItem(key);
+            if (raw) {
+              const val = parseInt(raw, 10);
+              if (!isNaN(val) && val > 0) {
+                let r = userMap.get(uid);
+                if (r) {
+                  r.ai_credits_total = Math.max(r.ai_credits_total, val);
+                }
+                mergedAiUsage.push({
+                  user_id: uid,
+                  usage_date: new Date().toISOString().split("T")[0],
+                  count: val,
+                });
+              }
+            }
+          }
+        }
+      } catch (_e) {
+        // ignore
+      }
+
+      setRawAiUsage(mergedAiUsage);
+
+      // Scan localStorage for all local calendars
+      const localCalendarsMap = new Map<string, any[]>();
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith("dailygap_local_cals_")) {
+            const uid = key.replace("dailygap_local_cals_", "").trim();
+            try {
+              const raw = localStorage.getItem(key);
+              if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                  localCalendarsMap.set(uid, parsed);
+                }
+              }
+            } catch (_err) {
+              // ignore
+            }
+          }
+        }
+      } catch (_e) {
+        // ignore
+      }
+
+      // Combine DB calendars with local calendars (deduplicating by signature)
+      const allCals: any[] = [];
+      const seenCalSigs = new Set<string>();
+
+      const getCalSig = (c: any) => {
+        const nicheStr = (c.niche || "").trim().toLowerCase();
+        const startDateStr = (c.start_date || "").trim();
+        const posts = Array.isArray(c.posts) ? c.posts : [];
+        const firstPost = posts[0] ? (posts[0].date || "") + "_" + (posts[0].content || "").substring(0, 20) : "";
+        return `${c.user_id}_${nicheStr}_${startDateStr}_${posts.length}_${firstPost}`;
+      };
+
+      for (const c of cals) {
+        if (!c.id) continue;
+        const sig = getCalSig(c);
+        if (!seenCalSigs.has(sig)) {
+          seenCalSigs.add(sig);
+          allCals.push(c);
+        }
+      }
+
+      for (const [uid, localList] of localCalendarsMap.entries()) {
+        for (const localCal of localList) {
+          if (!localCal) continue;
+          const localEntry = {
+            id: localCal.id,
+            user_id: uid,
+            niche: localCal.niche || "General",
+            start_date: localCal.start_date || "",
+            posts: localCal.posts || [],
+            created_at: localCal.created_at || new Date().toISOString(),
+            frozen: Boolean(localCal.frozen),
+          };
+          const sig = getCalSig(localEntry);
+          if (!seenCalSigs.has(sig)) {
+            seenCalSigs.add(sig);
+            allCals.push(localEntry);
+          }
+        }
+      }
+
+      for (const cal of allCals) {
         let r = userMap.get(cal.user_id);
         if (!r) {
           const matchLoc = localProfs.find((p: any) => p.id === cal.user_id || p.user_id === cal.user_id);
@@ -414,12 +548,12 @@ export default function Admin() {
         return r;
       });
 
-      const totalCalendars = cals.length;
+      const totalCalendars = allCals.length;
       let totalPosts = 0;
       let genPosts = 0;
       let manPosts = 0;
       let edPosts = 0;
-      for (const cal of cals) {
+      for (const cal of allCals) {
         const posts = Array.isArray(cal.posts) ? cal.posts : [];
         totalPosts += posts.length;
         for (const p of posts) {
@@ -437,7 +571,7 @@ export default function Admin() {
       }
       const attempts = successCount + failCount;
       const rate = attempts > 0 ? Math.round((successCount / attempts) * 100) : 0;
-      const totalCredits = usage.reduce((acc, curr) => acc + Number(curr.count || 0), 0);
+      const totalCredits = userRows.reduce((acc, u) => acc + (u.ai_credits_total || 0), 0);
 
       setSummary({
         total_users: Math.max(userRows.length, 1),
@@ -465,19 +599,119 @@ export default function Admin() {
     }
   };
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (isBackground = false) => {
+    if (!isBackground) setLoading(true);
     setForbidden(false);
     try {
       await loadFallbackStats();
       const { data, error } = await supabase.functions.invoke("admin-stats");
       if (!error && data?.summary) {
-        setSummary(data.summary);
-        if (data.users?.length) setUsers(data.users);
+        const serverUsers = data.users || [];
+        const localCalendarsMap = new Map<string, any[]>();
+        try {
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith("dailygap_local_cals_")) {
+              const uid = key.replace("dailygap_local_cals_", "").trim();
+              const raw = localStorage.getItem(key);
+              if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) localCalendarsMap.set(uid, parsed);
+              }
+            }
+          }
+        } catch (_e) {
+          // ignore
+        }
+
+        const serverCalSigs = new Set((data.rawCalendars || []).map((c: any) => {
+          const nicheStr = (c.niche || "").trim().toLowerCase();
+          const startDateStr = (c.start_date || "").trim();
+          const posts = Array.isArray(c.posts) ? c.posts : [];
+          const firstPost = posts[0] ? (posts[0].date || "") + "_" + (posts[0].content || "").substring(0, 20) : "";
+          return `${c.user_id}_${nicheStr}_${startDateStr}_${posts.length}_${firstPost}`;
+        }));
+        let extraLocalCalsCount = 0;
+        let extraLocalPostsCount = 0;
+        let extraLocalGenPosts = 0;
+        let extraLocalManPosts = 0;
+
+        for (const [uid, localList] of localCalendarsMap.entries()) {
+          const uRow = serverUsers.find((u: any) => u.user_id === uid);
+          for (const lCal of localList) {
+            if (!lCal) continue;
+            const nicheStr = (lCal.niche || "").trim().toLowerCase();
+            const startDateStr = (lCal.start_date || "").trim();
+            const lPosts = Array.isArray(lCal.posts) ? lCal.posts : [];
+            const firstPost = lPosts[0] ? (lPosts[0].date || "") + "_" + (lPosts[0].content || "").substring(0, 20) : "";
+            const sig = `${uid}_${nicheStr}_${startDateStr}_${lPosts.length}_${firstPost}`;
+
+            if (!serverCalSigs.has(sig)) {
+              serverCalSigs.add(sig);
+              extraLocalCalsCount++;
+              extraLocalPostsCount += lPosts.length;
+
+              let gen = 0, man = 0;
+              for (const p of lPosts) {
+                if ((p as any)?.source === 'manual') { man++; extraLocalManPosts++; }
+                else { gen++; extraLocalGenPosts++; }
+              }
+
+              if (uRow) {
+                uRow.calendars = (uRow.calendars || 0) + 1;
+                uRow.total_posts = (uRow.total_posts || 0) + lPosts.length;
+                uRow.generated_posts = (uRow.generated_posts || 0) + gen;
+                uRow.manual_posts = (uRow.manual_posts || 0) + man;
+              }
+            }
+          }
+        }
+
+        // Merge local AI credits
+        const extraAiUsage: any[] = [];
+        try {
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith("dailygap_ai_credits_")) {
+              const uid = key.replace("dailygap_ai_credits_", "").trim();
+              const raw = localStorage.getItem(key);
+              if (raw) {
+                const val = parseInt(raw, 10);
+                if (!isNaN(val) && val > 0) {
+                  const uRow = serverUsers.find((u: any) => u.user_id === uid);
+                  if (uRow) {
+                    uRow.ai_credits_total = Math.max(uRow.ai_credits_total || 0, val);
+                  }
+                  extraAiUsage.push({
+                    user_id: uid,
+                    usage_date: new Date().toISOString().split("T")[0],
+                    count: val,
+                  });
+                }
+              }
+            }
+          }
+        } catch (_e) {
+          // ignore
+        }
+
+        const updatedTotalCredits = serverUsers.reduce((acc: number, u: any) => acc + (u.ai_credits_total || 0), 0);
+
+        const updatedSummary = {
+          ...data.summary,
+          total_calendars: (data.summary.total_calendars || 0) + extraLocalCalsCount,
+          total_posts: (data.summary.total_posts || 0) + extraLocalPostsCount,
+          generated_posts: (data.summary.generated_posts || 0) + extraLocalGenPosts,
+          manual_posts: (data.summary.manual_posts || 0) + extraLocalManPosts,
+          ai_credits_total: Math.max(data.summary.ai_credits_total || 0, updatedTotalCredits),
+        };
+
+        setSummary(updatedSummary);
+        if (serverUsers.length) setUsers(serverUsers);
         if (data.rawCalendars) setRawCalendars(data.rawCalendars);
         if (data.rawLogs) setRawLogs(data.rawLogs);
         if (data.rawConns) setRawConns(data.rawConns);
-        if (data.rawAiUsage) setRawAiUsage(data.rawAiUsage);
+        if (data.rawAiUsage) setRawAiUsage([...data.rawAiUsage, ...extraAiUsage]);
       }
     } catch (e: any) {
       if (user?.email === "ebenezeraledu@gmail.com") {
@@ -486,7 +720,7 @@ export default function Admin() {
         toast.error(e.message || "Failed to load admin stats");
       }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   };
 
@@ -509,10 +743,14 @@ export default function Admin() {
       }
 
       // 2. Direct Supabase DB update
-      await supabase.from('profiles').update({
-        ai_restricted: newRestrictedState,
-        updated_at: new Date().toISOString()
-      }).eq('id', targetUser.user_id).catch(() => {});
+      try {
+        await supabase.from('profiles').update({
+          ai_restricted: newRestrictedState,
+          updated_at: new Date().toISOString()
+        }).eq('id', targetUser.user_id);
+      } catch (e) {
+        console.warn("DB update AI restriction notice:", e);
+      }
 
       // 3. Local storage sync
       try {
@@ -584,11 +822,26 @@ export default function Admin() {
         console.warn("Edge function freeze notice:", e);
       }
 
-      // 2. Direct Supabase DB update
-      await supabase.from('profiles').update({
-        account_frozen: newFrozenState,
-        updated_at: new Date().toISOString()
-      }).eq('id', targetUser.user_id).catch(() => {});
+      // 2. Direct Supabase DB update (upsert & update by both id and email)
+      try {
+        await supabase.from('profiles').upsert({
+          id: targetUser.user_id,
+          email: targetUser.email,
+          account_frozen: newFrozenState,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'email' });
+      } catch (e) {
+        console.warn("DB upsert freeze notice:", e);
+      }
+
+      try {
+        await supabase.from('profiles').update({
+          account_frozen: newFrozenState,
+          updated_at: new Date().toISOString()
+        }).or(`id.eq.${targetUser.user_id},email.eq.${targetUser.email}`);
+      } catch (e) {
+        console.warn("DB update freeze notice:", e);
+      }
 
       // 3. Local storage sync
       try {
@@ -658,10 +911,14 @@ export default function Admin() {
 
       // 2. Direct DB update
       if (unfreeze) {
-        await supabase.from('profiles').update({
-          account_frozen: false,
-          updated_at: new Date().toISOString()
-        }).eq('id', targetUser.user_id).catch(() => {});
+        try {
+          await supabase.from('profiles').update({
+            account_frozen: false,
+            updated_at: new Date().toISOString()
+          }).eq('id', targetUser.user_id);
+        } catch (e) {
+          console.warn("DB update unfreeze appeal notice:", e);
+        }
       }
 
       // 3. Local storage update
@@ -724,62 +981,100 @@ export default function Admin() {
     }
   };
 
-  // Delete User Account
-  const handleDeleteUser = async (targetUser: UserRow) => {
+  // Delete User Account Trigger
+  const handleDeleteUser = (targetUser: UserRow) => {
     if (targetUser.email === "ebenezeraledu@gmail.com") {
       toast.error("Super Admin account cannot be deleted");
       return;
     }
+    setUserToDelete(targetUser);
+  };
 
-    if (!window.confirm(`Are you sure you want to permanently delete user account "${targetUser.email}"? This will erase all associated calendars, posts, and data.`)) {
-      return;
-    }
+  // Execution of Delete User Account
+  const confirmDeleteUser = async () => {
+    if (!userToDelete) return;
+    const targetUser = userToDelete;
+    setUserToDelete(null);
 
     setActionLoadingId(targetUser.user_id);
     try {
+      // 0. Remove from authService storage completely (users, passwords, tokens, rate limits, storage)
+      try {
+        authService.deleteUser(targetUser.user_id);
+      } catch (e) {
+        console.warn("authService.deleteUser notice:", e);
+      }
+
       // 1. Invoke Supabase admin edge function if available
       try {
         await supabase.functions.invoke("admin-stats", {
           body: {
             action: "delete_user",
             target_user_id: targetUser.user_id,
+            target_email: targetUser.email,
           },
         });
       } catch (e) {
         console.warn("Edge function delete_user notice:", e);
       }
 
-      // 2. Direct table cleanup
+      // 2. Direct child table cleanup first (prevents Foreign Key constraint failures)
+      const targetFilter = `user_id.eq.${targetUser.user_id},user_id.eq.${targetUser.email}`;
       await Promise.allSettled([
-        supabase.from('profiles').delete().eq('id', targetUser.user_id),
-        supabase.from('calendars').delete().eq('user_id', targetUser.user_id),
-        supabase.from('linkedin_post_log').delete().eq('user_id', targetUser.user_id),
-        supabase.from('linkedin_connections').delete().eq('user_id', targetUser.user_id),
-        supabase.from('ai_usage_daily').delete().eq('user_id', targetUser.user_id),
+        supabase.from('calendars').delete().or(targetFilter),
+        supabase.from('linkedin_post_log').delete().or(targetFilter),
+        supabase.from('linkedin_connections').delete().or(targetFilter),
+        supabase.from('ai_usage_daily').delete().or(targetFilter),
       ]);
 
-      // 3. Remove from local state
-      setUsers(prev => prev.filter(u => u.user_id !== targetUser.user_id));
-      setRawCalendars(prev => prev.filter(c => c.user_id !== targetUser.user_id));
-      setRawLogs(prev => prev.filter(l => l.user_id !== targetUser.user_id));
+      // 3. Delete from profiles table matching both ID and email
+      try {
+        await supabase.from('profiles').delete().or(`id.eq.${targetUser.user_id},email.eq.${targetUser.email}`);
+      } catch (e) {
+        console.warn("Direct DB profile deletion notice:", e);
+      }
 
-      // 4. Update cached profiles in localStorage if present
+      // 4. Update cached profiles in localStorage (match by ID, user_id, AND email)
       try {
         const raw = localStorage.getItem("dailygap_all_profiles");
         if (raw) {
           const list = JSON.parse(raw);
-          const updated = list.filter((p: any) => p.id !== targetUser.user_id && p.user_id !== targetUser.user_id);
+          const updated = list.filter((p: any) => 
+            p.id !== targetUser.user_id && 
+            p.user_id !== targetUser.user_id && 
+            p.email?.toLowerCase() !== targetUser.email?.toLowerCase()
+          );
           localStorage.setItem("dailygap_all_profiles", JSON.stringify(updated));
         }
       } catch (e) {
         console.warn("Failed to update cached local profiles:", e);
       }
 
-      if (inspectUser?.user_id === targetUser.user_id) {
+      // 5. If the deleted account is stored as the active session, clear session
+      try {
+        const rawSess = localStorage.getItem("dailygap_user_session");
+        if (rawSess) {
+          const sess = JSON.parse(rawSess);
+          if (sess.email?.toLowerCase() === targetUser.email?.toLowerCase() || sess.id === targetUser.user_id) {
+            localStorage.removeItem("dailygap_user_session");
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to clear active user session:", e);
+      }
+
+      // 6. Remove from local component state
+      setUsers(prev => prev.filter(u => u.user_id !== targetUser.user_id && u.email?.toLowerCase() !== targetUser.email?.toLowerCase()));
+      setRawCalendars(prev => prev.filter(c => c.user_id !== targetUser.user_id && c.user_id !== targetUser.email));
+      setRawLogs(prev => prev.filter(l => l.user_id !== targetUser.user_id && l.user_id !== targetUser.email));
+      setRawConns(prev => prev.filter(c => c.user_id !== targetUser.user_id && c.user_id !== targetUser.email));
+      setRawAiUsage(prev => prev.filter(a => a.user_id !== targetUser.user_id && a.user_id !== targetUser.email));
+
+      if (inspectUser?.user_id === targetUser.user_id || inspectUser?.email?.toLowerCase() === targetUser.email?.toLowerCase()) {
         setInspectUser(null);
       }
 
-      toast.success(`User account ${targetUser.email} has been permanently deleted`);
+      toast.success(`User account ${targetUser.email} and all data have been completely wiped.`);
     } catch (err: any) {
       toast.error(err.message || "Failed to delete user account");
     } finally {
@@ -787,15 +1082,24 @@ export default function Admin() {
     }
   };
 
-  // Wipe All Database Records Except Super Admin
-  const handleWipeAllNonAdminAccounts = async () => {
-    const nonAdminCount = users.filter(u => u.email !== "ebenezeraledu@gmail.com").length;
-    if (!window.confirm(`DANGER ZONE: Are you sure you want to wipe ALL database records and user accounts EXCEPT Super Admin (ebenezeraledu@gmail.com)?\n\nThis will permanently delete ${nonAdminCount} non-admin user account(s), their calendars, post logs, and connection data. This action CANNOT be undone.`)) {
-      return;
-    }
+  // Wipe All Database Records Except Super Admin Trigger
+  const handleWipeAllNonAdminAccounts = () => {
+    setShowWipeConfirm(true);
+  };
 
+  // Execution of Complete Sweep of Database Except Super Admin
+  const confirmWipeAllNonAdminAccounts = async () => {
+    setShowWipeConfirm(false);
     setLoading(true);
     try {
+      // 0. Sweep entire authService & client storage (passwords, emails, settings, tokens, cals, AI usage)
+      let wipeStats = { wipedCount: 0, superAdmin: null as any };
+      try {
+        wipeStats = authService.wipeDatabaseExceptSuperAdmin();
+      } catch (e) {
+        console.warn("authService.wipeDatabaseExceptSuperAdmin notice:", e);
+      }
+
       // 1. Try edge function wipe if available
       try {
         await supabase.functions.invoke("admin-stats", {
@@ -806,8 +1110,8 @@ export default function Admin() {
       }
 
       // 2. Identify Super Admin user ID
-      const superAdminUser = users.find(u => u.email === "ebenezeraledu@gmail.com");
-      const superAdminId = superAdminUser?.user_id || user?.id;
+      const superAdminUser = users.find(u => u.email === "ebenezeraledu@gmail.com") || wipeStats.superAdmin;
+      const superAdminId = superAdminUser?.user_id || superAdminUser?.id || user?.id || 'user_dailygap_local';
 
       // 3. Direct DB wipe for non-admin accounts
       if (superAdminId) {
@@ -824,34 +1128,56 @@ export default function Admin() {
         ]);
       }
 
-      // 4. Clean local storage profiles
-      try {
-        const raw = localStorage.getItem("dailygap_all_profiles");
-        if (raw) {
-          const list = JSON.parse(raw);
-          const updated = list.filter((p: any) => p.email === "ebenezeraledu@gmail.com" || p.id === superAdminId);
-          localStorage.setItem("dailygap_all_profiles", JSON.stringify(updated));
-        } else if (superAdminUser) {
-          localStorage.setItem("dailygap_all_profiles", JSON.stringify([{
-            id: superAdminUser.user_id,
-            email: "ebenezeraledu@gmail.com",
-            created_at: superAdminUser.created_at,
-            last_sign_in_at: new Date().toISOString(),
-          }]));
-        }
-      } catch (e) {
-        console.warn("Failed to clear local profiles storage:", e);
-      }
+      // 4. Update local React states
+      const retainedSuperAdminRow: UserRow = {
+        user_id: superAdminId,
+        email: "ebenezeraledu@gmail.com",
+        created_at: superAdminUser?.created_at || new Date().toISOString(),
+        last_sign_in_at: new Date().toISOString(),
+        ai_restricted: false,
+        account_frozen: false,
+        appeal: null,
+        linkedin_connected: false,
+        linkedin_name: null,
+        calendars: 0,
+        total_posts: 0,
+        generated_posts: 0,
+        manual_posts: 0,
+        edited_posts: 0,
+        posted_success: 0,
+        posted_failed: 0,
+        success_rate: 0,
+        ai_credits_total: 0,
+        ai_usage_records: [],
+      };
 
-      // 5. Update local React states
-      setUsers(prev => prev.filter(u => u.email === "ebenezeraledu@gmail.com"));
-      setRawCalendars(prev => superAdminId ? prev.filter(c => c.user_id === superAdminId) : []);
-      setRawLogs(prev => superAdminId ? prev.filter(l => l.user_id === superAdminId) : []);
-      setRawConns(prev => superAdminId ? prev.filter(c => c.user_id === superAdminId) : []);
-      setRawAiUsage(prev => superAdminId ? prev.filter(a => a.user_id === superAdminId) : []);
+      setUsers([retainedSuperAdminRow]);
+      setRawCalendars([]);
+      setRawLogs([]);
+      setRawConns([]);
+      setRawAiUsage([]);
       setInspectUser(null);
 
-      toast.success("Database successfully wiped! All non-admin accounts and data have been permanently removed.");
+      // Recompute summary
+      setSummary({
+        total_users: 1,
+        active_users_7d: 1,
+        linkedin_connected: 0,
+        total_calendars: 0,
+        total_posts: 0,
+        generated_posts: 0,
+        manual_posts: 0,
+        edited_posts: 0,
+        posted_success: 0,
+        posted_failed: 0,
+        overall_success_rate: 0,
+        ai_credits_total: 0,
+        ai_restricted_count: 0,
+        account_frozen_count: 0,
+        pending_appeals_count: 0,
+      });
+
+      toast.success("Database sweep complete! All user accounts, credentials, calendars, and data have been wiped except Super Admin.");
     } catch (err: any) {
       toast.error(err.message || "Failed to wipe non-admin database records");
     } finally {
@@ -877,8 +1203,18 @@ export default function Admin() {
         map.set(rec.user_id, (map.get(rec.user_id) || 0) + Number(rec.count || 0));
       }
     }
+    for (const u of users) {
+      const current = map.get(u.user_id) || 0;
+      if (timeframe === 'all') {
+        map.set(u.user_id, Math.max(current, u.ai_credits_total || 0));
+      } else {
+        if (current === 0 && (u.ai_credits_total || 0) > 0) {
+          map.set(u.user_id, u.ai_credits_total);
+        }
+      }
+    }
     return map;
-  }, [rawAiUsage, cutoffDateStr]);
+  }, [rawAiUsage, cutoffDateStr, timeframe, users]);
 
   // Aggregate total AI credits in selected date range
   const totalFilteredAiCredits = useMemo(() => {
@@ -1153,26 +1489,26 @@ export default function Admin() {
   return (
     <div className="min-h-screen bg-background pb-16">
       <SEO title="Admin — Daily Gap" description="Super admin user management & platform stats" path="/admin" noIndex />
-      <div className="max-w-7xl mx-auto p-6 space-y-6">
+      <div className="max-w-7xl mx-auto p-4 sm:p-6 space-y-6">
         
         {/* Header Bar */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex flex-wrap items-center gap-2 mb-2">
               <Button variant="ghost" size="sm" onClick={() => navigate("/dashboard")}>
                 <ArrowLeft className="h-4 w-4 mr-1" /> Back
               </Button>
-              <Badge variant="secondary" className="gap-1 font-mono text-xs">
-                <ShieldCheck className="h-3 w-3 text-emerald-500" /> Super Admin Active ({user?.email || "ebenezeraledu@gmail.com"})
+              <Badge variant="secondary" className="gap-1 font-mono text-xs max-w-full truncate">
+                <ShieldCheck className="h-3 w-3 text-emerald-500 shrink-0" /> Super Admin Active ({user?.email || "ebenezeraledu@gmail.com"})
               </Badge>
             </div>
-            <h1 className="text-2xl font-semibold tracking-tight">Super Admin User Management & Control</h1>
-            <p className="text-sm text-muted-foreground">Track user activities, monitor date-filtered AI credit consumption, restrict AI access, and freeze accounts.</p>
+            <h1 className="text-xl sm:text-2xl font-semibold tracking-tight">Super Admin User Management & Control</h1>
+            <p className="text-xs sm:text-sm text-muted-foreground">Track user activities, monitor date-filtered AI credit consumption, restrict AI access, and freeze accounts.</p>
           </div>
           
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             {/* Global Date Filter for AI Credits & Analytics */}
-            <div className="flex items-center gap-1 bg-surface p-1 rounded-lg border border-border/40 text-xs shadow-sm">
+            <div className="flex flex-wrap items-center gap-1 bg-surface p-1 rounded-lg border border-border/40 text-xs shadow-sm">
               <span className="px-2 text-muted-foreground font-medium flex items-center gap-1">
                 <Clock className="h-3.5 w-3.5" /> Date Filter:
               </span>
@@ -1193,6 +1529,17 @@ export default function Admin() {
               {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
               Refresh
             </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleWipeAllNonAdminAccounts}
+              disabled={loading}
+              className="gap-1.5 text-xs font-semibold shadow-sm bg-rose-600 hover:bg-rose-700 text-white border-0"
+              title="Perform a complete sweep of the database and wipe all non-admin data"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Sweep Database (Wipe Users)
+            </Button>
             <ProfileAvatarMenu />
             <Button
               variant="ghost"
@@ -1210,7 +1557,7 @@ export default function Admin() {
 
         {/* Summary Stat Cards */}
         {summary && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <Stat label="Total Registered Users" value={summary.total_users} sub="System wide" />
             <Stat label="Active (7 Days)" value={summary.active_users_7d} sub="Signed in recently" />
             <Stat
@@ -1288,6 +1635,18 @@ export default function Admin() {
                   <option value="success_rate">Sort: Success Rate</option>
                 </select>
               </div>
+
+              {/* Sweep All Users Action Button */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleWipeAllNonAdminAccounts}
+                className="gap-1.5 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-500/10 border-rose-300 dark:border-rose-800/60 font-semibold shrink-0"
+                title="Sweep database of all users except super admin"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Sweep Users ({users.filter(u => u.email !== "ebenezeraledu@gmail.com").length})
+              </Button>
             </div>
           </div>
 
@@ -1621,33 +1980,33 @@ export default function Admin() {
 
       {/* User Inspection & Appeals Drawer Modal */}
       {inspectUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
-          <Card className="w-full max-w-3xl max-h-[90vh] overflow-y-auto p-6 space-y-6 shadow-2xl border-primary/30 animate-in fade-in zoom-in-95">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-3 sm:p-4">
+          <Card className="w-full max-w-3xl max-h-[90vh] overflow-y-auto p-4 sm:p-6 space-y-5 sm:space-y-6 shadow-2xl border-primary/30 animate-in fade-in zoom-in-95">
             {/* Modal Header */}
-            <div className="flex items-start justify-between border-b pb-4">
-              <div>
-                <div className="flex items-center gap-2">
-                  <h2 className="text-xl font-bold font-display">{inspectUser.email}</h2>
+            <div className="flex items-start justify-between border-b pb-4 gap-2">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-lg sm:text-xl font-bold font-display truncate">{inspectUser.email}</h2>
                   {inspectUser.account_frozen ? (
-                    <Badge variant="destructive" className="gap-1 text-xs">
+                    <Badge variant="destructive" className="gap-1 text-xs shrink-0">
                       <Snowflake className="h-3 w-3" /> Account Frozen
                     </Badge>
                   ) : inspectUser.ai_restricted ? (
-                    <Badge className="bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/40 gap-1 text-xs">
+                    <Badge className="bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/40 gap-1 text-xs shrink-0">
                       <Ban className="h-3 w-3" /> AI Restricted
                     </Badge>
                   ) : (
-                    <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/30 gap-1 text-xs">
+                    <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/30 gap-1 text-xs shrink-0">
                       <CheckCircle2 className="h-3 w-3" /> Active
                     </Badge>
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground font-mono mt-1">
+                <p className="text-xs text-muted-foreground font-mono mt-1 truncate">
                   User ID: {inspectUser.user_id}
                 </p>
               </div>
 
-              <Button variant="ghost" size="sm" onClick={() => setInspectUser(null)}>
+              <Button variant="ghost" size="sm" onClick={() => setInspectUser(null)} className="shrink-0">
                 <XCircle className="h-5 w-5" />
               </Button>
             </div>
@@ -1734,7 +2093,7 @@ export default function Admin() {
                 <p className="text-xs text-foreground bg-background/60 p-3 rounded-lg border border-border italic">
                   "{inspectUser.appeal.message}"
                 </p>
-                <div className="flex items-center justify-between text-xs text-muted-foreground pt-1">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground pt-1">
                   <span>Submitted on {new Date(inspectUser.appeal.submitted_at).toLocaleString()}</span>
                   {inspectUser.appeal.status === 'pending' && (
                     <div className="flex items-center gap-2">
@@ -1760,7 +2119,7 @@ export default function Admin() {
             )}
 
             {/* User Statistics Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               <div className="bg-surface p-3 rounded-lg border border-border">
                 <p className="text-[11px] text-muted-foreground">AI Credits ({timeframe})</p>
                 <p className="text-lg font-bold font-mono text-primary">
@@ -1817,6 +2176,82 @@ export default function Admin() {
           </Card>
         </div>
       )}
+
+      {/* Delete User Confirmation Modal */}
+      <AlertDialog open={Boolean(userToDelete)} onOpenChange={(open) => !open && setUserToDelete(null)}>
+        <AlertDialogContent className="sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-destructive">
+              <Trash2 className="h-5 w-5" />
+              Delete User Account
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-3 pt-2 text-sm">
+              <p>
+                Are you sure you want to permanently delete user account <span className="font-semibold text-foreground">{userToDelete?.email}</span>?
+              </p>
+              <div className="text-xs text-muted-foreground bg-destructive/10 p-3 rounded-lg border border-destructive/20 space-y-1">
+                <p className="font-semibold text-destructive flex items-center gap-1.5">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Irreversible Action
+                </p>
+                <p>
+                  This will permanently erase all calendars, generated posts, logs, LinkedIn connection records, and account metadata associated with this user.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="mt-4 gap-2 sm:gap-0">
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDeleteUser}
+              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-medium"
+            >
+              Permanently Delete Account
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Wipe All Database Records Confirmation Modal */}
+      <AlertDialog open={showWipeConfirm} onOpenChange={setShowWipeConfirm}>
+        <AlertDialogContent className="sm:max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-5 w-5" />
+              Complete Database Sweep (Wipe All Users)
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-3 pt-2 text-sm text-foreground/80">
+              <p>
+                Are you sure you want to perform a complete sweep of the database and wipe all stored user records EXCEPT Super Admin (<span className="font-semibold text-foreground">ebenezeraledu@gmail.com</span>)?
+              </p>
+              
+              <div className="text-xs space-y-2 bg-destructive/10 p-3.5 rounded-lg border border-destructive/25">
+                <p className="font-bold text-destructive flex items-center gap-1.5 text-xs">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  PERMANENT DELETION & RESET IMPACT:
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-muted-foreground text-[11px] leading-relaxed">
+                  <li><strong>Credentials & Logins:</strong> All non-admin emails, passwords, and authentication sessions completely wiped.</li>
+                  <li><strong>Account Settings & Profiles:</strong> User settings, customized profiles, and avatar data permanently erased.</li>
+                  <li><strong>Content & Calendars:</strong> All generated and manual posts, schedules, and content calendars completely cleared.</li>
+                  <li><strong>Tokens & Verification:</strong> All pending email verification and password reset tokens purged.</li>
+                  <li><strong>Sign-in Impact:</strong> Any wiped user who returns to log in will find no record of their account and will need to <strong>sign up afresh and verify their email anew</strong>.</li>
+                  <li><strong>Super Admin Preserved:</strong> The Super Admin (<span className="font-mono text-foreground font-semibold">ebenezeraledu@gmail.com</span>) is 100% retained with all permissions and password credentials.</li>
+                </ul>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="mt-4 gap-2 sm:gap-0">
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmWipeAllNonAdminAccounts}
+              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold"
+            >
+              Perform Complete Sweep (Wipe {users.filter(u => u.email !== "ebenezeraledu@gmail.com").length} Users)
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -208,11 +208,11 @@ export const DecorationToolbar = ({
   fileInputRef: React.RefObject<HTMLInputElement>;
   handleUpload: (file: File) => void;
 }) => (
-  <div className="flex items-center gap-2 mb-3">
+  <div className="flex flex-wrap items-center gap-2 mb-3">
     <Button
       variant={editMode ? "default" : "outline"}
       size="sm"
-      className="gap-1.5 text-xs"
+      className="gap-1.5 text-xs h-9"
       onClick={() => { setEditMode(!editMode); setSelectedId(null); }}
     >
       <ImagePlus className="h-3.5 w-3.5" />
@@ -223,7 +223,7 @@ export const DecorationToolbar = ({
         <Button
           variant="outline"
           size="sm"
-          className="gap-1.5 text-xs"
+          className="gap-1.5 text-xs h-9"
           onClick={() => fileInputRef.current?.click()}
         >
           Upload Image

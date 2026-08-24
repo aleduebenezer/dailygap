@@ -29,7 +29,7 @@ export function ProfileAvatarMenu({
   const navigate = useNavigate();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState("profile");
+  const [activeTab, setActiveTab] = useState<string | null>(null);
 
   const meta = user?.user_metadata || {};
   const cachedProfileRaw = user ? localStorage.getItem(`dailygap_profile_${user.id}`) : null;
@@ -65,7 +65,7 @@ export function ProfileAvatarMenu({
     navigate("/");
   };
 
-  const openSettingsWithTab = (tab: string) => {
+  const openSettingsWithTab = (tab: string | null = null) => {
     setActiveTab(tab);
     setSettingsOpen(true);
   };
@@ -76,16 +76,27 @@ export function ProfileAvatarMenu({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            className="group relative flex items-center justify-center rounded-full focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 focus:ring-offset-background transition-transform active:scale-95"
+            className="group relative flex items-center gap-2.5 px-2.5 py-1 rounded-full hover:bg-muted/60 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 focus:ring-offset-background transition-all active:scale-95 text-left border border-border/40 bg-background/50 backdrop-blur-xs"
             aria-label="User account menu"
           >
-            <Avatar className="h-9 w-9 border-2 border-primary/30 group-hover:border-primary shadow-sm transition-colors">
-              <AvatarImage src={avatarUrl} alt={username} />
-              <AvatarFallback className="bg-primary/10 text-primary font-bold text-xs">
-                {initials}
-              </AvatarFallback>
-            </Avatar>
-            <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-emerald-500 ring-2 ring-background" />
+            <div className="relative shrink-0">
+              <Avatar className="h-8 w-8 sm:h-9 sm:w-9 border border-rose-200/80 dark:border-rose-900/60 shadow-2xs">
+                <AvatarImage src={avatarUrl} alt={username} />
+                <AvatarFallback className="bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300 font-bold text-xs">
+                  {initials}
+                </AvatarFallback>
+              </Avatar>
+              <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
+            </div>
+
+            <div className="flex flex-col min-w-0 pr-0.5">
+              <span className="text-xs font-bold text-foreground leading-tight truncate max-w-[110px] sm:max-w-[150px]">
+                {username}
+              </span>
+              <span className="text-[10px] text-muted-foreground/80 leading-tight truncate max-w-[110px] sm:max-w-[150px]">
+                {email}
+              </span>
+            </div>
           </button>
         </DropdownMenuTrigger>
 
@@ -115,7 +126,7 @@ export function ProfileAvatarMenu({
 
           {/* MENU OPTIONS */}
           <DropdownMenuItem
-            onClick={() => openSettingsWithTab("profile")}
+            onClick={() => openSettingsWithTab(null)}
             className="p-2.5 rounded-xl cursor-pointer hover:bg-accent/80 focus:bg-accent/80 transition-colors flex items-center gap-2.5 text-sm font-medium text-foreground"
           >
             <Settings className="h-4 w-4 text-primary" />

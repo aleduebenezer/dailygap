@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Sun, Moon, Plus, Sparkles, LogOut, ChevronLeft, ChevronRight, X, Copy,
   ChevronDown, Trash2, MoreHorizontal, Pencil, Share2, Snowflake, Settings2, Clock, Check, Wand2, ShieldCheck,
-  Menu, Settings, User
+  Menu, Settings, User, Linkedin
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { handleAiError } from "@/lib/handleAiError";
@@ -261,6 +261,17 @@ const Dashboard = () => {
   const copyToClipboard = (content: string) => {
     navigator.clipboard.writeText(content);
     toast.success("Copied to clipboard!");
+  };
+
+  const shareToLinkedIn = async (content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch {
+      // ignore
+    }
+    const shareUrl = `https://www.linkedin.com/feed/?shareActive=true&text=${encodeURIComponent(content)}`;
+    window.open(shareUrl, "_blank", "noopener,noreferrer");
+    toast.success("Post copied to clipboard! Opening LinkedIn share composer...");
   };
 
   const { firstDay, daysInMonth } = getDaysInMonth(currentMonth);
@@ -958,6 +969,16 @@ const Dashboard = () => {
                   <div className="flex items-center gap-1">
                     {!isEditingPost && (
                       <>
+                        <Button
+                          variant="hero"
+                          size="sm"
+                          onClick={() => shareToLinkedIn(currentPost.content)}
+                          className="h-8 px-2.5 text-xs gap-1.5 font-medium"
+                          title="Share to LinkedIn"
+                        >
+                          <Linkedin className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">Share on LinkedIn</span>
+                        </Button>
                         <Button variant="ghost" size="icon" onClick={() => copyToClipboard(currentPost.content)} title="Copy" aria-label="Copy post content">
                           <Copy className="h-4 w-4" />
                         </Button>

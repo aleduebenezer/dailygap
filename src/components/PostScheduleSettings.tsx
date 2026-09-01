@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Clock, Timer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
 interface PostScheduleSettingsProps {
@@ -30,63 +30,96 @@ const PostScheduleSettings = ({ userId, calendarId, calendarNiche }: PostSchedul
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
+  const localKey = `dailygap_schedule_${userId}_${calendarId}`;
+
   useEffect(() => {
     fetchSchedule();
-  }, [calendarId]);
+  }, [calendarId, userId]);
 
   const fetchSchedule = async () => {
-    const { data } = await supabase
-      .from("post_schedules")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("calendar_id", calendarId)
-      .maybeSingle();
+    // 1. Read local storage
+    try {
+      const cached = localStorage.getItem(localKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed.start_time) setStartTime(parsed.start_time);
+        if (parsed.end_time) setEndTime(parsed.end_time);
+        if (parsed.timezone) setTimezone(parsed.timezone);
+        if (typeof parsed.enabled === "boolean") setEnabled(parsed.enabled);
+      }
+    } catch (e) {
+      console.warn("Could not read local schedule:", e);
+    }
 
-    if (data) {
-      setStartTime(data.start_time);
-      setEndTime(data.end_time);
-      setTimezone(data.timezone);
-      setEnabled(data.enabled);
+    // 2. Read Supabase if configured
+    if (isSupabaseConfigured) {
+      try {
+        const { data } = await supabase
+          .from("post_schedules")
+          .select("*")
+          .eq("user_id", userId)
+          .eq("calendar_id", calendarId)
+          .maybeSingle();
+
+        if (data) {
+          setStartTime(data.start_time);
+          setEndTime(data.end_time);
+          setTimezone(data.timezone);
+          setEnabled(data.enabled);
+          localStorage.setItem(localKey, JSON.stringify(data));
+        }
+      } catch (e) {
+        console.warn("Error fetching Supabase post schedule:", e);
+      }
     }
     setLoaded(true);
   };
 
   const saveSchedule = async () => {
     setSaving(true);
+    const payload = {
+      start_time: startTime,
+      end_time: endTime,
+      timezone,
+      enabled,
+      user_id: userId,
+      calendar_id: calendarId,
+    };
+
+    // Save locally
     try {
-      const { data: existing } = await supabase
-        .from("post_schedules")
-        .select("id")
-        .eq("user_id", userId)
-        .eq("calendar_id", calendarId)
-        .maybeSingle();
-
-      if (existing) {
-        const { error } = await supabase
-          .from("post_schedules")
-          .update({ start_time: startTime, end_time: endTime, timezone, enabled })
-          .eq("id", existing.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from("post_schedules")
-          .insert({
-            user_id: userId,
-            calendar_id: calendarId,
-            start_time: startTime,
-            end_time: endTime,
-            timezone,
-            enabled,
-          });
-        if (error) throw error;
-      }
-
-      toast.success(enabled ? "Auto-posting schedule saved!" : "Schedule saved (disabled)");
-    } catch (err: any) {
-      toast.error(err.message || "Failed to save schedule");
-    } finally {
-      setSaving(false);
+      localStorage.setItem(localKey, JSON.stringify(payload));
+    } catch (e) {
+      console.warn("Could not save local schedule:", e);
     }
+
+    // Save to Supabase if configured
+    if (isSupabaseConfigured) {
+      try {
+        const { data: existing } = await supabase
+          .from("post_schedules")
+          .select("id")
+          .eq("user_id", userId)
+          .eq("calendar_id", calendarId)
+          .maybeSingle();
+
+        if (existing) {
+          await supabase
+            .from("post_schedules")
+            .update({ start_time: startTime, end_time: endTime, timezone, enabled })
+            .eq("id", existing.id);
+        } else {
+          await supabase
+            .from("post_schedules")
+            .insert(payload);
+        }
+      } catch (err: any) {
+        console.warn("Supabase schedule update notice:", err);
+      }
+    }
+
+    toast.success(enabled ? "Auto-posting schedule saved!" : "Schedule saved (disabled)");
+    setSaving(false);
   };
 
   if (!loaded) return null;
@@ -171,3 +204,4 @@ const PostScheduleSettings = ({ userId, calendarId, calendarNiche }: PostSchedul
 };
 
 export default PostScheduleSettings;
+

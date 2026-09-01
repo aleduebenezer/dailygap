@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { MessageCircle, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
 const TYPES = ["Fun", "Post-related", "Food", "Greeting", "Well-wishes"] as const;
@@ -20,22 +20,49 @@ const AutoCommentSettings = ({ userId }: Props) => {
   const [types, setTypes] = useState<CType[]>(["Greeting", "Post-related", "Well-wishes"]);
   const [attachMedia, setAttachMedia] = useState(false);
 
+  const localKey = `dailygap_autocomments_${userId}`;
+
   useEffect(() => {
-    (async () => {
-      const { data } = await supabase
-        .from("linkedin_auto_comments")
-        .select("*")
-        .eq("user_id", userId)
-        .maybeSingle();
-      if (data) {
-        setEnabled(!!data.enabled);
-        setCount(data.comment_count || 5);
-        setTypes((data.comment_types as CType[]) || ["Greeting", "Post-related", "Well-wishes"]);
-        setAttachMedia(!!data.attach_media);
+    // 1. Read local storage
+    try {
+      const cached = localStorage.getItem(localKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (typeof parsed.enabled === "boolean") setEnabled(parsed.enabled);
+        if (parsed.comment_count) setCount(parsed.comment_count);
+        if (parsed.comment_types) setTypes(parsed.comment_types);
+        if (typeof parsed.attach_media === "boolean") setAttachMedia(parsed.attach_media);
       }
+    } catch (e) {
+      console.warn("Could not parse local auto-comments:", e);
+    }
+
+    // 2. Read Supabase if configured
+    if (isSupabaseConfigured) {
+      (async () => {
+        try {
+          const { data } = await supabase
+            .from("linkedin_auto_comments")
+            .select("*")
+            .eq("user_id", userId)
+            .maybeSingle();
+          if (data) {
+            setEnabled(!!data.enabled);
+            setCount(data.comment_count || 5);
+            setTypes((data.comment_types as CType[]) || ["Greeting", "Post-related", "Well-wishes"]);
+            setAttachMedia(!!data.attach_media);
+            localStorage.setItem(localKey, JSON.stringify(data));
+          }
+        } catch (e) {
+          console.warn("Error fetching Supabase auto-comments:", e);
+        } finally {
+          setLoaded(true);
+        }
+      })();
+    } else {
       setLoaded(true);
-    })();
-  }, [userId]);
+    }
+  }, [userId, localKey]);
 
   const toggleType = (t: CType) => {
     setTypes((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
@@ -47,35 +74,44 @@ const AutoCommentSettings = ({ userId }: Props) => {
       return;
     }
     setSaving(true);
+    const payload = {
+      user_id: userId,
+      enabled,
+      comment_count: count,
+      comment_types: types,
+      attach_media: attachMedia,
+    };
+
+    // Save locally
     try {
-      const { data: existing } = await supabase
-        .from("linkedin_auto_comments")
-        .select("id")
-        .eq("user_id", userId)
-        .maybeSingle();
-      const payload = {
-        user_id: userId,
-        enabled,
-        comment_count: count,
-        comment_types: types,
-        attach_media: attachMedia,
-      };
-      if (existing) {
-        const { error } = await supabase
-          .from("linkedin_auto_comments")
-          .update(payload)
-          .eq("id", existing.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from("linkedin_auto_comments").insert(payload);
-        if (error) throw error;
-      }
-      toast.success(enabled ? "Auto-comments enabled" : "Settings saved (off)");
-    } catch (e: any) {
-      toast.error(e.message || "Failed to save");
-    } finally {
-      setSaving(false);
+      localStorage.setItem(localKey, JSON.stringify(payload));
+    } catch (e) {
+      console.warn("Could not save local auto-comments:", e);
     }
+
+    // Save to Supabase if configured
+    if (isSupabaseConfigured) {
+      try {
+        const { data: existing } = await supabase
+          .from("linkedin_auto_comments")
+          .select("id")
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (existing) {
+          await supabase
+            .from("linkedin_auto_comments")
+            .update(payload)
+            .eq("id", existing.id);
+        } else {
+          await supabase.from("linkedin_auto_comments").insert(payload);
+        }
+      } catch (e: any) {
+        console.warn("Supabase auto-comment save notice:", e);
+      }
+    }
+
+    toast.success(enabled ? "Auto-comments enabled" : "Settings saved (off)");
+    setSaving(false);
   };
 
   if (!loaded) return null;
@@ -154,3 +190,4 @@ const AutoCommentSettings = ({ userId }: Props) => {
 };
 
 export default AutoCommentSettings;
+

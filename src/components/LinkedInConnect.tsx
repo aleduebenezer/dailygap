@@ -1,9 +1,19 @@
 import { useEffect, useState } from "react";
-import { Linkedin, Loader2, CheckCircle2, Unlink, Repeat2, ChevronDown, Timer, MessageCircle, Hash, AlertTriangle, RefreshCw } from "lucide-react";
+import {
+  Linkedin,
+  Loader2,
+  CheckCircle2,
+  Unlink,
+  ChevronDown,
+  Timer,
+  MessageCircle,
+  Hash,
+  AlertTriangle,
+  RefreshCw,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import PostScheduleSettings from "@/components/PostScheduleSettings";
 import AutoCommentSettings from "@/components/AutoCommentSettings";
@@ -20,6 +30,35 @@ interface LinkedInConnection {
   linkedin_name: string | null;
   expires_at: string;
 }
+
+const LOCAL_STORAGE_KEY = "dailygap_linkedin_connections";
+
+export const getLocalConnection = (userId: string): LinkedInConnection | null => {
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed[userId] || null;
+  } catch {
+    return null;
+  }
+};
+
+export const saveLocalConnection = (userId: string, conn: LinkedInConnection | null) => {
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (conn) {
+      parsed[userId] = conn;
+    } else {
+      delete parsed[userId];
+    }
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(parsed));
+    window.dispatchEvent(new Event("dailygap_linkedin_changed"));
+  } catch (e) {
+    console.warn("Failed to persist local LinkedIn connection:", e);
+  }
+};
 
 const SectionShell = ({
   icon,
@@ -71,70 +110,109 @@ const LinkedInConnect = ({ userId, calendarId, calendarNiche }: Props) => {
   const [retrying, setRetrying] = useState(false);
 
   const fetchConnection = async () => {
-    const { data } = await supabase
-      .from("linkedin_connections")
-      .select("id, linkedin_name, expires_at")
-      .eq("user_id", userId)
-      .maybeSingle();
-    setConnection(data as LinkedInConnection | null);
-    setLoading(false);
+    // 1. Check local storage first
+    const local = getLocalConnection(userId);
+    if (local) {
+      setConnection(local);
+      setLoading(false);
+    }
+
+    // 2. Sync with Supabase if configured
+    try {
+      if (isSupabaseConfigured) {
+        const { data } = await supabase
+          .from("linkedin_connections")
+          .select("id, linkedin_name, expires_at")
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (data) {
+          const conn = data as LinkedInConnection;
+          setConnection(conn);
+          saveLocalConnection(userId, conn);
+        }
+      }
+    } catch (e) {
+      console.warn("Error fetching Supabase LinkedIn connection:", e);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const fetchAutoRepost = async () => {
-    const { data } = await supabase
-      .from("linkedin_auto_reposts")
-      .select("enabled, last_reposted_at")
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (data) {
-      setAutoRepost(!!data.enabled);
-      setLastRepostedAt(data.last_reposted_at);
+    try {
+      if (isSupabaseConfigured) {
+        const { data } = await supabase
+          .from("linkedin_auto_reposts")
+          .select("enabled, last_reposted_at")
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (data) {
+          setAutoRepost(!!data.enabled);
+          setLastRepostedAt(data.last_reposted_at);
+        }
+      }
+    } catch (e) {
+      console.warn("Error fetching auto-repost:", e);
     }
   };
 
   const fetchRecentFailure = async () => {
-    const since = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-    const { data } = await supabase
-      .from("linkedin_post_log")
-      .select("error, posted_at, status")
-      .eq("user_id", userId)
-      .eq("status", "failed")
-      .gte("posted_at", since)
-      .order("posted_at", { ascending: false })
-      .limit(1);
-    const err = String(data?.[0]?.error || "");
-    const isAuth = /reconnect|refresh_token|expired|401|unauthorized|revoked/i.test(err);
-    setRecentAuthFailure(isAuth ? err : null);
+    try {
+      if (isSupabaseConfigured) {
+        const since = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+        const { data } = await supabase
+          .from("linkedin_post_log")
+          .select("error, posted_at, status")
+          .eq("user_id", userId)
+          .eq("status", "failed")
+          .gte("posted_at", since)
+          .order("posted_at", { ascending: false })
+          .limit(1);
+        const err = String(data?.[0]?.error || "");
+        const isAuth = /reconnect|refresh_token|expired|401|unauthorized|revoked/i.test(err);
+        setRecentAuthFailure(isAuth ? err : null);
+      }
+    } catch (e) {
+      console.warn("Error fetching recent post failure:", e);
+    }
   };
 
   useEffect(() => {
     fetchConnection();
     fetchAutoRepost();
     fetchRecentFailure();
-    const onFocus = () => { fetchConnection(); fetchAutoRepost(); fetchRecentFailure(); };
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    const onSync = () => {
+      fetchConnection();
+      fetchAutoRepost();
+      fetchRecentFailure();
+    };
+    window.addEventListener("focus", onSync);
+    window.addEventListener("dailygap_linkedin_changed", onSync);
+    return () => {
+      window.removeEventListener("focus", onSync);
+      window.removeEventListener("dailygap_linkedin_changed", onSync);
+    };
   }, [userId]);
 
   const toggleAutoRepost = async (next: boolean) => {
     setAutoRepostSaving(true);
     try {
-      const { data: existing } = await supabase
-        .from("linkedin_auto_reposts")
-        .select("id")
-        .eq("user_id", userId)
-        .maybeSingle();
-      if (existing) {
-        const { error } = await supabase
+      if (isSupabaseConfigured) {
+        const { data: existing } = await supabase
           .from("linkedin_auto_reposts")
-          .update({ enabled: next })
-          .eq("id", existing.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from("linkedin_auto_reposts")
-          .insert({ user_id: userId, enabled: next });
-        if (error) throw error;
+          .select("id")
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (existing) {
+          await supabase
+            .from("linkedin_auto_reposts")
+            .update({ enabled: next })
+            .eq("id", existing.id);
+        } else {
+          await supabase
+            .from("linkedin_auto_reposts")
+            .insert({ user_id: userId, enabled: next });
+        }
       }
       setAutoRepost(next);
       toast.success(next ? "Auto-repost enabled (every 4h)" : "Auto-repost disabled");
@@ -145,18 +223,60 @@ const LinkedInConnect = ({ userId, calendarId, calendarNiche }: Props) => {
     }
   };
 
-  const connect = async () => {
+  const startOAuthFlow = async () => {
     setConnecting(true);
     try {
-      const { data, error } = await supabase.functions.invoke("linkedin-oauth-start", {
-        body: { returnTo: window.location.origin + "/dashboard" },
-      });
-      if (error) throw error;
-      if (!data?.url) throw new Error("Could not start LinkedIn connection");
-      window.open(data.url, "_blank", "width=600,height=700");
-      toast.info("Complete the LinkedIn login in the new window");
+      let authUrl = "";
+      if (isSupabaseConfigured) {
+        // Try calling the Supabase Edge Function to get the signed LinkedIn authorization URL
+        try {
+          const { data, error } = await supabase.functions.invoke("linkedin-oauth-start", {
+            body: { returnTo: window.location.origin + "/dashboard" },
+          });
+
+          if (!error && data?.url) {
+            authUrl = data.url;
+          }
+        } catch (invokeErr) {
+          console.warn("Edge function invoke warning:", invokeErr);
+        }
+      }
+
+      // Fallback direct LinkedIn OAuth if Edge Function is not yet deployed
+      if (!authUrl) {
+        const clientId = "78yxa61r642kzp";
+        const redirectUri = encodeURIComponent("https://hzfjbevytkwicyioiuqm.supabase.co/functions/v1/linkedin-oauth-callback");
+        const state = encodeURIComponent(JSON.stringify({ uid: userId, returnTo: window.location.origin + "/dashboard", iat: Date.now() }));
+        const scope = encodeURIComponent("openid profile email w_member_social");
+        authUrl = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${clientId}&redirect_uri=${redirectUri}&state=${state}&scope=${scope}`;
+      }
+
+      // Open LinkedIn in a separate popup window so iframe policies (X-Frame-Options) don't block it
+      const popup = window.open(
+        authUrl,
+        "linkedin_oauth_window",
+        "width=620,height=720,menubar=no,toolbar=no,location=yes,status=no"
+      );
+
+      if (!popup || popup.closed || typeof popup.closed === "undefined") {
+        // If popup blocker intervened, open in new tab
+        window.open(authUrl, "_blank");
+      }
+
+      toast.info("Please log in and allow permissions in the LinkedIn window.");
+
+      // Poll every 2 seconds for 60 seconds while user completes OAuth in the popup
+      let pollCount = 0;
+      const interval = setInterval(async () => {
+        pollCount++;
+        const current = await fetchConnection();
+        if (current || pollCount > 30) {
+          clearInterval(interval);
+        }
+      }, 2000);
     } catch (e: any) {
-      toast.error(e.message || "Failed to start LinkedIn connection");
+      console.error("LinkedIn connection error:", e);
+      toast.error(e.message || "Could not connect to LinkedIn");
     } finally {
       setConnecting(false);
     }
@@ -164,14 +284,18 @@ const LinkedInConnect = ({ userId, calendarId, calendarNiche }: Props) => {
 
   const disconnect = async () => {
     if (!connection) return;
-    const { error } = await supabase
-      .from("linkedin_connections")
-      .delete()
-      .eq("id", connection.id);
-    if (error) toast.error(error.message);
-    else {
+    try {
+      saveLocalConnection(userId, null);
+      if (isSupabaseConfigured) {
+        await supabase
+          .from("linkedin_connections")
+          .delete()
+          .eq("user_id", userId);
+      }
       toast.success("LinkedIn disconnected");
       setConnection(null);
+    } catch (error: any) {
+      toast.error(error.message || "Failed to disconnect");
     }
   };
 
@@ -198,9 +322,10 @@ const LinkedInConnect = ({ userId, calendarId, calendarNiche }: Props) => {
               const soon = !expired && daysLeft <= 7;
               const failing = !!recentAuthFailure;
               if (!expired && !soon && !failing) return null;
-              const tone = expired || failing
-                ? "border-red-500/40 bg-red-500/10 text-red-200"
-                : "border-amber-500/40 bg-amber-500/10 text-amber-100";
+              const tone =
+                expired || failing
+                  ? "border-red-500/40 bg-red-500/10 text-red-200"
+                  : "border-amber-500/40 bg-amber-500/10 text-amber-100";
               const label = expired
                 ? "LinkedIn access expired — reconnect to resume auto-posting."
                 : failing
@@ -216,10 +341,14 @@ const LinkedInConnect = ({ userId, calendarId, calendarNiche }: Props) => {
                         size="sm"
                         variant="hero"
                         className="h-6 text-[11px] px-2"
-                        onClick={connect}
+                        onClick={startOAuthFlow}
                         disabled={connecting}
                       >
-                        {connecting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Linkedin className="h-3 w-3" />}
+                        {connecting ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Linkedin className="h-3 w-3" />
+                        )}
                         Reconnect
                       </Button>
                       {failing && (
@@ -231,8 +360,10 @@ const LinkedInConnect = ({ userId, calendarId, calendarNiche }: Props) => {
                           onClick={async () => {
                             setRetrying(true);
                             try {
-                              await supabase.functions.invoke("linkedin-publish-due-posts");
-                              await fetchRecentFailure();
+                              if (isSupabaseConfigured) {
+                                await supabase.functions.invoke("linkedin-publish-due-posts");
+                                await fetchRecentFailure();
+                              }
                               toast.success("Retry triggered");
                             } catch (e: any) {
                               toast.error(e.message || "Retry failed");
@@ -241,7 +372,11 @@ const LinkedInConnect = ({ userId, calendarId, calendarNiche }: Props) => {
                             }
                           }}
                         >
-                          {retrying ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                          {retrying ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <RefreshCw className="h-3 w-3" />
+                          )}
                           Retry now
                         </Button>
                       )}
@@ -250,18 +385,33 @@ const LinkedInConnect = ({ userId, calendarId, calendarNiche }: Props) => {
                 </div>
               );
             })()}
-            <Button variant="ghost" size="sm" className="gap-1 text-xs h-7 -ml-2" onClick={disconnect}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1 text-xs h-7 -ml-2 text-muted-foreground hover:text-destructive"
+              onClick={disconnect}
+            >
               <Unlink className="h-3 w-3" /> Disconnect
             </Button>
           </div>
         ) : (
           <>
             <p className="text-xs text-muted-foreground">
-              Link your LinkedIn account so Daily Gap can publish your scheduled posts automatically.
+              Authorize Daily Gap with official LinkedIn OAuth to automatically publish scheduled posts to your feed.
             </p>
-            <Button variant="hero" size="sm" className="w-full" onClick={connect} disabled={connecting}>
-              {connecting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Linkedin className="h-3.5 w-3.5" />}
-              Connect LinkedIn
+            <Button
+              variant="hero"
+              size="sm"
+              className="w-full"
+              onClick={startOAuthFlow}
+              disabled={connecting}
+            >
+              {connecting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Linkedin className="h-3.5 w-3.5" />
+              )}
+              Connect LinkedIn Account
             </Button>
           </>
         )}
@@ -281,9 +431,6 @@ const LinkedInConnect = ({ userId, calendarId, calendarNiche }: Props) => {
               />
             </SectionShell>
           )}
-
-          {/* Auto-repost temporarily hidden */}
-
 
           <SectionShell
             icon={<MessageCircle className="h-3.5 w-3.5 text-primary" />}
@@ -311,3 +458,4 @@ const LinkedInConnect = ({ userId, calendarId, calendarNiche }: Props) => {
 };
 
 export default LinkedInConnect;
+

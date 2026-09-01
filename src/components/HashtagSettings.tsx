@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Switch } from "@/components/ui/switch";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
 interface Props {
@@ -12,46 +12,82 @@ const HashtagSettings = ({ userId }: Props) => {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  const localKey = `dailygap_hashtags_${userId}`;
+
   useEffect(() => {
-    (async () => {
-      const { data } = await supabase
-        .from("user_preferences")
-        .select("hashtags_enabled")
-        .eq("user_id", userId)
-        .maybeSingle();
-      if (data) setEnabled(!!data.hashtags_enabled);
+    // 1. Read local storage
+    try {
+      const cached = localStorage.getItem(localKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (typeof parsed.hashtags_enabled === "boolean") {
+          setEnabled(parsed.hashtags_enabled);
+        }
+      }
+    } catch (e) {
+      console.warn("Could not parse local hashtags settings:", e);
+    }
+
+    // 2. Read Supabase if configured
+    if (isSupabaseConfigured) {
+      (async () => {
+        try {
+          const { data } = await supabase
+            .from("user_preferences")
+            .select("hashtags_enabled")
+            .eq("user_id", userId)
+            .maybeSingle();
+          if (data) {
+            setEnabled(!!data.hashtags_enabled);
+            localStorage.setItem(localKey, JSON.stringify(data));
+          }
+        } catch (e) {
+          console.warn("Error fetching Supabase hashtags setting:", e);
+        } finally {
+          setLoaded(true);
+        }
+      })();
+    } else {
       setLoaded(true);
-    })();
-  }, [userId]);
+    }
+  }, [userId, localKey]);
 
   const toggle = async (next: boolean) => {
     setSaving(true);
     setEnabled(next);
+
+    // Save locally
     try {
-      const { data: existing } = await supabase
-        .from("user_preferences")
-        .select("id")
-        .eq("user_id", userId)
-        .maybeSingle();
-      if (existing) {
-        const { error } = await supabase
-          .from("user_preferences")
-          .update({ hashtags_enabled: next })
-          .eq("id", existing.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from("user_preferences")
-          .insert({ user_id: userId, hashtags_enabled: next });
-        if (error) throw error;
-      }
-      toast.success(next ? "Hashtags enabled" : "Hashtags disabled");
-    } catch (e: any) {
-      setEnabled(!next);
-      toast.error(e.message || "Failed to save");
-    } finally {
-      setSaving(false);
+      localStorage.setItem(localKey, JSON.stringify({ hashtags_enabled: next }));
+    } catch (e) {
+      console.warn("Could not save local hashtags setting:", e);
     }
+
+    // Save to Supabase if configured
+    if (isSupabaseConfigured) {
+      try {
+        const { data: existing } = await supabase
+          .from("user_preferences")
+          .select("id")
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (existing) {
+          await supabase
+            .from("user_preferences")
+            .update({ hashtags_enabled: next })
+            .eq("id", existing.id);
+        } else {
+          await supabase
+            .from("user_preferences")
+            .insert({ user_id: userId, hashtags_enabled: next });
+        }
+      } catch (e: any) {
+        console.warn("Supabase hashtag save notice:", e);
+      }
+    }
+
+    toast.success(next ? "Hashtags enabled" : "Hashtags disabled");
+    setSaving(false);
   };
 
   if (!loaded) return null;
@@ -72,3 +108,4 @@ const HashtagSettings = ({ userId }: Props) => {
 };
 
 export default HashtagSettings;
+

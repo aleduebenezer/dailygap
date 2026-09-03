@@ -34,7 +34,7 @@
     --input: 215 16% 89%;
     --ring: 217 89% 53%;
 
-    --radius: 0px;
+    --radius: 16px;
 
     --sidebar-background: 210 20% 98%;
     --sidebar-foreground: 220 25% 10%;
@@ -97,7 +97,6 @@
 @layer base {
   * {
     @apply border-border;
-    border-radius: 0px !important;
   }
 
   body {

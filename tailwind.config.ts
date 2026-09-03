@@ -68,14 +68,15 @@ export default {
       },
       borderRadius: {
         none: "0px",
-        sm: "0px",
-        DEFAULT: "0px",
-        md: "0px",
-        lg: "0px",
-        xl: "0px",
-        "2xl": "0px",
-        "3xl": "0px",
-        full: "0px",
+        xs: "6px",
+        sm: "8px",
+        DEFAULT: "12px",
+        md: "14px",
+        lg: "16px",
+        xl: "18px",
+        "2xl": "20px",
+        "3xl": "24px",
+        full: "9999px",
       },
       keyframes: {
         "accordion-down": {

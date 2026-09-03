@@ -31,6 +31,7 @@ import {
   updateLocalCalendar,
   deleteLocalCalendar,
   clearLocalCalendars,
+  syncServerCalendars,
 } from "@/lib/localCalendarStore";
 import { recordAiUsage } from "@/lib/aiUsageStore";
 import { ProfileAvatarMenu } from "@/components/ProfileAvatarMenu";
@@ -167,6 +168,12 @@ const Dashboard = () => {
       if (data) dbCals = data as any;
     } catch (e) {
       console.warn("Error loading DB calendars:", e);
+    }
+
+    try {
+      await syncServerCalendars(user.id);
+    } catch {
+      // Non-blocking sync fallback
     }
 
     const localCals = getLocalCalendars(user.id);
@@ -399,11 +406,32 @@ const Dashboard = () => {
     try {
       const hashtagsEnabled = await getHashtagsEnabled(user?.id);
       const priorPosts = (existing || []).slice(-8).map((p: any) => p.content).filter(Boolean);
-      const { data, error } = await supabase.functions.invoke("generate-posts", {
-        body: { niche: editNicheDialog.niche, samples: [], numDays: days, startDate: newStart, hashtagsEnabled, priorPosts },
-      });
-      if (error) throw error;
-      const tagged = (data.posts || []).map((p: any) => ({ ...p, niche: editNicheDialog.niche }));
+      let postsData: any[] = [];
+
+      try {
+        const { data, error } = await supabase.functions.invoke("generate-posts", {
+          body: { niche: editNicheDialog.niche, samples: [], numDays: days, startDate: newStart, hashtagsEnabled, priorPosts },
+        });
+        if (!error && data?.posts) {
+          postsData = data.posts;
+        }
+      } catch (edgeErr) {
+        console.warn("Supabase edge function notice, falling back to server API:", edgeErr);
+      }
+
+      if (!postsData || postsData.length === 0) {
+        const resp = await fetch("/api/generate-posts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ niche: editNicheDialog.niche, samples: [], numDays: days, startDate: newStart, hashtagsEnabled }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (data?.posts) {
+          postsData = data.posts;
+        }
+      }
+
+      const tagged = (postsData || []).map((p: any) => ({ ...p, niche: editNicheDialog.niche }));
       const merged = [...existing, ...tagged];
       const { error: upErr } = await supabase
         .from("calendars")
@@ -444,11 +472,32 @@ const Dashboard = () => {
     try {
       const hashtagsEnabled = await getHashtagsEnabled(user?.id);
       const priorPosts = (existing || []).slice(-8).map((p: any) => p.content).filter(Boolean);
-      const { data, error } = await supabase.functions.invoke("generate-posts", {
-        body: { niche: editNicheDialog.niche, samples: [], numDays, startDate, hashtagsEnabled, priorPosts },
-      });
-      if (error) throw error;
-      const tagged = (data.posts || []).map((p: any) => ({ ...p, niche: editNicheDialog.niche }));
+      let postsData: any[] = [];
+
+      try {
+        const { data, error } = await supabase.functions.invoke("generate-posts", {
+          body: { niche: editNicheDialog.niche, samples: [], numDays, startDate, hashtagsEnabled, priorPosts },
+        });
+        if (!error && data?.posts) {
+          postsData = data.posts;
+        }
+      } catch (edgeErr) {
+        console.warn("Supabase edge function notice, using server API fallback:", edgeErr);
+      }
+
+      if (!postsData || postsData.length === 0) {
+        const resp = await fetch("/api/generate-posts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ niche: editNicheDialog.niche, samples: [], numDays, startDate, hashtagsEnabled }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (data?.posts) {
+          postsData = data.posts;
+        }
+      }
+
+      const tagged = (postsData || []).map((p: any) => ({ ...p, niche: editNicheDialog.niche }));
       const { error: upErr } = await supabase
         .from("calendars")
         .update({ posts: tagged as any, start_date: startDate })

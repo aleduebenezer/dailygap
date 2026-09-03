@@ -32,7 +32,7 @@ const App = () => (
       <AuthProvider>
         <TooltipProvider>
           <Toaster />
-          <Sonner position="top-right" richColors />
+          <Sonner position="top-right" />
           <BrowserRouter>
             <Routes>
               {/* Public Marketing */}

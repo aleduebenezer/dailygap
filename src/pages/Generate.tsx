@@ -90,17 +90,48 @@ const Generate = () => {
     setGenerating(true);
     try {
       const hashtagsEnabled = await getHashtagsEnabled(user?.id);
-      const { data, error } = await supabase.functions.invoke("generate-posts", {
-        body: {
-          niche,
-          samples: samples.filter((s) => s.trim()),
-          numDays,
-          startDate,
-          hashtagsEnabled,
-        },
-      });
-      if (error) throw error;
-      setPosts(data.posts);
+      let postsResult: any[] | null = null;
+
+      try {
+        const { data, error } = await supabase.functions.invoke("generate-posts", {
+          body: {
+            niche,
+            samples: samples.filter((s) => s.trim()),
+            numDays,
+            startDate,
+            hashtagsEnabled,
+          },
+        });
+        if (!error && data?.posts) {
+          postsResult = data.posts;
+        }
+      } catch (edgeErr) {
+        console.warn("Supabase edge function notice, falling back to server API:", edgeErr);
+      }
+
+      if (!postsResult || postsResult.length === 0) {
+        const resp = await fetch("/api/generate-posts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            niche,
+            samples: samples.filter((s) => s.trim()),
+            numDays,
+            startDate,
+            hashtagsEnabled,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (data?.posts) {
+          postsResult = data.posts;
+        }
+      }
+
+      if (!postsResult || postsResult.length === 0) {
+        throw new Error("Failed to generate posts. Please try again.");
+      }
+
+      setPosts(postsResult);
       setStep(3);
 
       const genDataToStore = {
@@ -108,14 +139,14 @@ const Generate = () => {
         samples: samples.filter((s) => s.trim()),
         numDays,
         startDate,
-        posts: data.posts,
+        posts: postsResult,
         timestamp: Date.now(),
       };
       sessionStorage.setItem("pendingGenerateData", JSON.stringify(genDataToStore));
       localStorage.setItem("pendingGenerateData", JSON.stringify(genDataToStore));
 
       if (user?.id) {
-        void recordAiUsage(user.id, data.posts?.length || numDays || 1);
+        void recordAiUsage(user.id, postsResult?.length || numDays || 1);
       }
     } catch (err: any) {
       handleAiError(err, "Failed to generate posts");
@@ -128,19 +159,48 @@ const Generate = () => {
     setRegeneratingIndex(index);
     try {
       const hashtagsEnabled = await getHashtagsEnabled(user?.id);
-      const { data, error } = await supabase.functions.invoke("generate-posts", {
-        body: {
-          niche,
-          samples: samples.filter((s) => s.trim()),
-          numDays: 1,
-          startDate: posts[index].date,
-          regenerate: true,
-          hashtagsEnabled,
-        },
-      });
-      if (error) throw error;
+      let newContent: string | null = null;
+
+      try {
+        const { data, error } = await supabase.functions.invoke("generate-posts", {
+          body: {
+            niche,
+            samples: samples.filter((s) => s.trim()),
+            numDays: 1,
+            startDate: posts[index].date,
+            regenerate: true,
+            hashtagsEnabled,
+          },
+        });
+        if (!error && data?.posts?.[0]?.content) {
+          newContent = data.posts[0].content;
+        }
+      } catch (edgeErr) {
+        console.warn("Supabase edge function notice, using server API fallback:", edgeErr);
+      }
+
+      if (!newContent) {
+        const resp = await fetch("/api/generate-posts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            niche,
+            samples: samples.filter((s) => s.trim()),
+            numDays: 1,
+            startDate: posts[index].date,
+            hashtagsEnabled,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (data?.posts?.[0]?.content) {
+          newContent = data.posts[0].content;
+        }
+      }
+
+      if (!newContent) throw new Error("Failed to regenerate post.");
+
       const updated = [...posts];
-      updated[index] = { ...updated[index], content: data.posts[0].content };
+      updated[index] = { ...updated[index], content: newContent };
       setPosts(updated);
       toast.success("Post regenerated!");
 

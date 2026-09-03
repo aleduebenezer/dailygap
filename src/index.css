@@ -122,3 +122,145 @@
     @apply bg-card border border-border shadow-sm;
   }
 }
+
+/* ==========================================================================
+   Popup Notifications (Daily Gap Design System Alignment)
+   Ensures popups match the product UI structure and current theme perfectly.
+   ========================================================================== */
+
+[data-sonner-toaster] {
+  font-family: 'Google Sans Flex', 'Google Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  --normal-bg: hsl(var(--card));
+  --normal-border: hsl(var(--border));
+  --normal-text: hsl(var(--card-foreground));
+  --border-radius: 16px;
+}
+
+[data-sonner-toast] {
+  font-family: 'Google Sans Flex', 'Google Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  background: hsl(var(--card)) !important;
+  color: hsl(var(--card-foreground)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: 16px !important;
+  padding: 14px 16px !important;
+  box-shadow: 0 14px 32px -6px rgba(15, 23, 42, 0.08), 0 4px 12px -2px rgba(15, 23, 42, 0.04) !important;
+  letter-spacing: normal !important;
+}
+
+/* Dark mode theme alignment */
+.dark [data-sonner-toast],
+[data-theme='dark'] [data-sonner-toast],
+[data-sonner-toaster][data-theme='dark'] [data-sonner-toast] {
+  background: hsl(var(--card)) !important;
+  color: hsl(var(--card-foreground)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.65), 0 0 0 1px hsl(var(--border)) !important;
+}
+
+/* Light mode theme alignment */
+.light [data-sonner-toast],
+[data-theme='light'] [data-sonner-toast],
+[data-sonner-toaster][data-theme='light'] [data-sonner-toast] {
+  background: #ffffff !important;
+  color: hsl(var(--card-foreground)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  box-shadow: 0 14px 30px -6px rgba(15, 23, 42, 0.09), 0 4px 10px -2px rgba(15, 23, 42, 0.04) !important;
+}
+
+/* Prevent different colored card backgrounds - all toasts share the consistent UI card background */
+[data-sonner-toast][data-type='success'],
+[data-sonner-toast][data-type='error'],
+[data-sonner-toast][data-type='warning'],
+[data-sonner-toast][data-type='info'],
+[data-sonner-toast][data-type='default'],
+[data-rich-colors='true'][data-sonner-toast][data-type='success'],
+[data-rich-colors='true'][data-sonner-toast][data-type='error'],
+[data-rich-colors='true'][data-sonner-toast][data-type='warning'],
+[data-rich-colors='true'][data-sonner-toast][data-type='info'] {
+  background: hsl(var(--card)) !important;
+  color: hsl(var(--card-foreground)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+}
+
+.light [data-sonner-toast][data-type='success'],
+.light [data-sonner-toast][data-type='error'],
+.light [data-sonner-toast][data-type='warning'],
+.light [data-sonner-toast][data-type='info'] {
+  background: #ffffff !important;
+  color: hsl(220 25% 10%) !important;
+  border: 1px solid hsl(var(--border)) !important;
+}
+
+/* Typography matching Daily Gap design system */
+[data-sonner-toast] [data-title] {
+  font-family: 'Google Sans Flex', 'Google Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  font-size: 0.875rem !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  color: hsl(var(--foreground)) !important;
+  line-height: 1.35 !important;
+}
+
+[data-sonner-toast] [data-description] {
+  font-family: 'Google Sans Flex', 'Google Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  font-size: 0.775rem !important;
+  font-weight: 400 !important;
+  color: hsl(var(--muted-foreground)) !important;
+  line-height: 1.45 !important;
+  margin-top: 3px !important;
+}
+
+/* Sleek close button placed cleanly inside the top-right corner */
+[data-sonner-toast] [data-close-button] {
+  position: absolute !important;
+  top: 12px !important;
+  right: 12px !important;
+  left: auto !important;
+  width: 24px !important;
+  height: 24px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  color: hsl(var(--muted-foreground)) !important;
+  opacity: 0.75 !important;
+  transition: all 0.15s ease-in-out !important;
+  transform: none !important;
+  cursor: pointer !important;
+}
+
+[data-sonner-toast] [data-close-button]:hover {
+  background: hsl(var(--secondary)) !important;
+  border-color: hsl(var(--border)) !important;
+  color: hsl(var(--foreground)) !important;
+  opacity: 1 !important;
+}
+
+/* Action button matching primary UI buttons */
+[data-sonner-toast] [data-button][data-action] {
+  background: hsl(var(--primary)) !important;
+  color: hsl(var(--primary-foreground)) !important;
+  font-size: 0.75rem !important;
+  font-weight: 600 !important;
+  border-radius: 8px !important;
+  padding: 6px 12px !important;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
+  transition: opacity 0.15s ease !important;
+}
+
+[data-sonner-toast] [data-button][data-action]:hover {
+  opacity: 0.9 !important;
+}
+
+/* Cancel button matching secondary UI buttons */
+[data-sonner-toast] [data-button][data-cancel] {
+  background: hsl(var(--secondary)) !important;
+  color: hsl(var(--secondary-foreground)) !important;
+  font-size: 0.75rem !important;
+  font-weight: 500 !important;
+  border-radius: 8px !important;
+  padding: 6px 12px !important;
+}
+

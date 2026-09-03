@@ -17,6 +17,7 @@ import {
   Clock,
   RefreshCw,
   KeyRound,
+  UserPlus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -83,6 +84,10 @@ export default function Auth() {
   // Check rate limit status on email change
   useEffect(() => {
     if (email && mode === "signin") {
+      if (email.trim().toLowerCase() === "ebenezeraledu@gmail.com") {
+        setLockoutSeconds(0);
+        return;
+      }
       const status = authService.checkLoginRateLimit(email);
       if (status.isLocked) {
         setLockoutSeconds(status.remainingSeconds);
@@ -201,7 +206,9 @@ export default function Auth() {
     setUnverifiedEmail(null);
     setResendSuccess(null);
 
-    if (lockoutSeconds > 0) {
+    if (email.trim().toLowerCase() === "ebenezeraledu@gmail.com") {
+      setLockoutSeconds(0);
+    } else if (lockoutSeconds > 0) {
       setGeneralError(`Too many failed login attempts. Account temporarily locked. Please wait ${lockoutSeconds} seconds.`);
       return;
     }
@@ -343,6 +350,23 @@ export default function Auth() {
                   <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
                   <div className="flex-1 space-y-1">
                     <p className="font-medium leading-relaxed">{generalError}</p>
+                    {generalError.includes("Account not found") && (
+                      <div className="pt-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="hero"
+                          onClick={() => {
+                            switchMode("signup");
+                            setGeneralError(null);
+                          }}
+                          className="h-8 text-xs px-3 rounded-lg gap-1.5 font-semibold bg-primary text-primary-foreground shadow-sm hover:brightness-105"
+                        >
+                          <UserPlus className="h-3.5 w-3.5" />
+                          Create account with this email
+                        </Button>
+                      </div>
+                    )}
                     {unverifiedEmail && (
                       <div className="pt-2 flex flex-wrap items-center gap-2">
                         <Button

@@ -1,0 +1,32 @@
+[
+  {
+    "id": "user_dailygap_local",
+    "email": "ebenezeraledu@gmail.com",
+    "passwordHash": "ad7f6fdb604cb3f6c8d488388bc16889231e7736377f218e561de544d8752069",
+    "full_name": "Ebenezer Aledu",
+    "username": "Ebenezer",
+    "avatar_url": "",
+    "role": "super_admin",
+    "email_verified": true,
+    "account_frozen": false,
+    "ai_restricted": false,
+    "created_at": "2026-09-03T15:12:27.919Z",
+    "updated_at": "2026-09-03T17:19:45.178Z",
+    "last_sign_in_at": "2026-09-03T17:19:45.178Z"
+  },
+  {
+    "id": "usr_1788448352111_3c0bd020",
+    "email": "client1@yopmail.com",
+    "passwordHash": "d59fff759f05968afed8991966e592b8a620bffc0f80f4c6db8166313f6e47ec",
+    "full_name": "Test Client",
+    "username": "Test",
+    "avatar_url": "",
+    "role": "user",
+    "email_verified": true,
+    "account_frozen": false,
+    "ai_restricted": false,
+    "created_at": "2026-09-03T15:12:32.111Z",
+    "updated_at": "2026-09-03T15:12:32.133Z",
+    "last_sign_in_at": "2026-09-03T15:12:32.133Z"
+  }
+]

@@ -100,9 +100,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     confirmPassword?: string;
   }) => {
     const result = await authService.signUp(params);
-    if (result.session && result.user) {
+    if (!result.requiresVerification && result.session && result.user) {
       setUser(result.user);
       setSession(result.session);
+    } else {
+      setUser(null);
+      setSession(null);
     }
     return result;
   };
@@ -138,12 +141,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const verifyEmail = async (token: string) => {
     const result = await authService.verifyEmailToken(token);
-    if (result.success && result.user) {
-      setUser(result.user);
-      if (result.session) {
-        setSession(result.session);
-      }
-    }
     return result;
   };
 

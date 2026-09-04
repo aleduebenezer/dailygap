@@ -2,7 +2,7 @@
   {
     "id": "user_dailygap_local",
     "email": "ebenezeraledu@gmail.com",
-    "passwordHash": "ad7f6fdb604cb3f6c8d488388bc16889231e7736377f218e561de544d8752069",
+    "passwordHash": "d59fff759f05968afed8991966e592b8a620bffc0f80f4c6db8166313f6e47ec",
     "full_name": "Ebenezer Aledu",
     "username": "Ebenezer",
     "avatar_url": "",
@@ -11,8 +11,8 @@
     "account_frozen": false,
     "ai_restricted": false,
     "created_at": "2026-09-03T15:12:27.919Z",
-    "updated_at": "2026-09-03T17:19:45.178Z",
-    "last_sign_in_at": "2026-09-03T17:19:45.178Z"
+    "updated_at": "2026-09-04T11:26:35.675Z",
+    "last_sign_in_at": "2026-09-04T11:26:35.675Z"
   },
   {
     "id": "usr_1788448352111_3c0bd020",
@@ -28,5 +28,48 @@
     "created_at": "2026-09-03T15:12:32.111Z",
     "updated_at": "2026-09-03T15:12:32.133Z",
     "last_sign_in_at": "2026-09-03T15:12:32.133Z"
+  },
+  {
+    "id": "usr_1788515365265_691c8246",
+    "email": "client2@yopmail.com",
+    "passwordHash": "592408d9146b53a6fdae668dba6ed2021475be7a52c57d9440e32c64f4ea2e9e",
+    "full_name": "Client 2-2",
+    "username": "Client",
+    "avatar_url": "",
+    "role": "user",
+    "email_verified": true,
+    "account_frozen": false,
+    "ai_restricted": false,
+    "created_at": "2026-09-04T09:49:25.266Z",
+    "updated_at": "2026-09-04T09:49:25.266Z"
+  },
+  {
+    "id": "usr_1788521177140_55de478f",
+    "email": "audit_flow_user@test.com",
+    "passwordHash": "d59fff759f05968afed8991966e592b8a620bffc0f80f4c6db8166313f6e47ec",
+    "full_name": "Audit User",
+    "username": "Audit",
+    "avatar_url": "",
+    "role": "user",
+    "email_verified": true,
+    "account_frozen": false,
+    "ai_restricted": false,
+    "created_at": "2026-09-04T11:26:17.140Z",
+    "updated_at": "2026-09-04T11:26:17.140Z"
+  },
+  {
+    "id": "usr_1788521195619_f9f0ae67",
+    "email": "audit_1788521195511@test.com",
+    "passwordHash": "d59fff759f05968afed8991966e592b8a620bffc0f80f4c6db8166313f6e47ec",
+    "full_name": "Audit Flow User",
+    "username": "Audit",
+    "avatar_url": "",
+    "role": "user",
+    "email_verified": true,
+    "account_frozen": false,
+    "ai_restricted": false,
+    "created_at": "2026-09-04T11:26:35.619Z",
+    "updated_at": "2026-09-04T11:26:35.670Z",
+    "last_sign_in_at": "2026-09-04T11:26:35.670Z"
   }
 ]

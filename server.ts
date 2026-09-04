@@ -23,6 +23,65 @@ app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
+// ---------------- EMAIL DISPATCH HELPER ----------------
+function sendOutboundVerificationEmail(params: {
+  to: string;
+  fullName: string;
+  actionUrl: string;
+  code: string;
+}) {
+  const { to, fullName, actionUrl, code } = params;
+  const resendKey = process.env.VITE_RESEND_API_KEY || process.env.RESEND_API_KEY;
+  if (!resendKey) {
+    console.info(`[Server Email] No Resend API key configured. Outbound verification for ${to} generated:\nAction Link: ${actionUrl}\nCode: ${code}`);
+    return;
+  }
+
+  fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${resendKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: 'Dailygap <onboarding@resend.dev>',
+      to: [to],
+      subject: 'Verify your Dailygap account',
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 36px 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff; color: #0f172a;">
+          <div style="margin-bottom: 24px;">
+            <h2 style="color: #0f172a; font-size: 22px; font-weight: 700; margin: 0 0 10px;">Verify your Dailygap account</h2>
+            <p style="color: #475569; font-size: 15px; line-height: 1.6; margin: 0;">
+              Hi <b>${fullName || 'there'}</b>, welcome to Dailygap! Please verify your email address to activate your account.
+            </p>
+          </div>
+
+          <div style="text-align: center; margin: 32px 0;">
+            <a href="${actionUrl}" style="display: inline-block; background-color: #0284c7; color: #ffffff; font-weight: 600; font-size: 15px; padding: 14px 32px; border-radius: 10px; text-decoration: none; box-shadow: 0 2px 4px rgba(2, 132, 199, 0.25);">
+              Verify Email Address
+            </a>
+          </div>
+
+          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; margin: 24px 0; text-align: center;">
+            <p style="font-size: 13px; color: #64748b; margin: 0 0 6px;">Or use this 6-character verification code:</p>
+            <span style="font-family: monospace; font-size: 24px; font-weight: 700; letter-spacing: 6px; color: #0284c7;">${code}</span>
+          </div>
+
+          <p style="color: #64748b; font-size: 13px; line-height: 1.5; margin: 24px 0 0;">
+            If the button doesn't work, copy and paste this verification link directly into your browser:<br />
+            <a href="${actionUrl}" style="color: #0284c7; word-break: break-all;">${actionUrl}</a>
+          </p>
+
+          <hr style="border: none; border-top: 1px solid #f1f5f9; margin: 32px 0 16px;" />
+          <p style="color: #94a3b8; font-size: 12px; margin: 0;">
+            This verification link is valid for 24 hours. If you did not sign up for Dailygap, please disregard this email.
+          </p>
+        </div>
+      `,
+    }),
+  }).catch((e) => console.warn('[Server] Resend email verification error:', e?.message));
+}
+
 // ---------------- AUTH API ROUTES ----------------
 
 // Register / Sign Up
@@ -40,42 +99,65 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
     }
 
     const cleanEmail = email.toLowerCase().trim();
+    const isSuperAdmin = cleanEmail === 'ebenezeraledu@gmail.com';
     const existing = serverStore.getUserByEmail(cleanEmail);
-    if (existing && cleanEmail !== 'ebenezeraledu@gmail.com') {
+    if (existing && !isSuperAdmin) {
       return res.status(400).json({ error: 'This email is already registered. Please sign in instead.' });
     }
 
     let user;
-    if (existing && cleanEmail === 'ebenezeraledu@gmail.com') {
+    if (existing && isSuperAdmin) {
       serverStore.updatePassword(cleanEmail, password);
       user = existing;
+      user.email_verified = true;
     } else {
       user = serverStore.createUser({
         email: cleanEmail,
         fullName: fullName.trim(),
         password,
+        email_verified: isSuperAdmin ? true : false,
       });
     }
 
-    const session = serverStore.createSession(user, true);
-
-    // Send async welcome/verification email if key exists
-    const resendKey = process.env.VITE_RESEND_API_KEY || process.env.RESEND_API_KEY;
-    if (resendKey) {
-      fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${resendKey}`,
-          'Content-Type': 'application/json',
+    // If super admin, create session and return directly
+    if (isSuperAdmin) {
+      const session = serverStore.createSession(user, true);
+      return res.json({
+        success: true,
+        user: {
+          id: user.id,
+          email: user.email,
+          full_name: user.full_name,
+          username: user.username,
+          avatar_url: user.avatar_url,
+          role: user.role,
+          email_verified: true,
+          account_frozen: user.account_frozen,
+          ai_restricted: user.ai_restricted,
+          created_at: user.created_at,
+          updated_at: user.updated_at,
+          last_sign_in_at: user.last_sign_in_at,
         },
-        body: JSON.stringify({
-          from: 'Daily Gap <onboarding@resend.dev>',
-          to: [cleanEmail],
-          subject: 'Welcome to Daily Gap!',
-          html: `<p>Welcome to Daily Gap, <b>${fullName}</b>! Your account has been successfully created and activated.</p>`,
-        }),
-      }).catch((e) => console.warn('[Server] Resend notice:', e?.message));
+        session,
+        requiresVerification: false,
+      });
     }
+
+    // For standard users: generate verification token and send verification email
+    const tokenRecord = serverStore.createToken(cleanEmail, 'email_verification');
+    const verificationCode = tokenRecord.token.substring(0, 6).toUpperCase();
+
+    const host = req.get('host') || 'localhost:3000';
+    const proto = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    const origin = `${proto}://${host}`;
+    const actionUrl = `${origin}/verify-email?token=${tokenRecord.token}&email=${encodeURIComponent(cleanEmail)}`;
+
+    sendOutboundVerificationEmail({
+      to: cleanEmail,
+      fullName: user.full_name,
+      actionUrl,
+      code: verificationCode,
+    });
 
     return res.json({
       success: true,
@@ -86,14 +168,16 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
         username: user.username,
         avatar_url: user.avatar_url,
         role: user.role,
-        email_verified: user.email_verified,
+        email_verified: false,
         account_frozen: user.account_frozen,
         ai_restricted: user.ai_restricted,
         created_at: user.created_at,
         updated_at: user.updated_at,
-        last_sign_in_at: user.last_sign_in_at,
       },
-      session,
+      requiresVerification: true,
+      actionUrl,
+      code: verificationCode,
+      message: 'Account registered. A verification link has been sent to your email from Dailygap.',
     });
   } catch (err: any) {
     console.error('[Server] Register error:', err);
@@ -224,6 +308,15 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
       });
     }
 
+    // Require email verification before logging in (except super admin)
+    if (!user.email_verified && !isSuperAdmin) {
+      return res.status(403).json({
+        error: 'Your email address has not been verified yet. Please check your inbox and click the verification link before signing in.',
+        code: 'EMAIL_NOT_VERIFIED',
+        email: cleanEmail,
+      });
+    }
+
     // Update last sign in
     user = serverStore.updateUser(user.id, {
       last_sign_in_at: new Date().toISOString(),
@@ -308,6 +401,77 @@ app.post('/api/auth/logout', (req: Request, res: Response) => {
     return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
+  }
+});
+
+// Verify Email Token
+app.post('/api/auth/verify-email', (req: Request, res: Response) => {
+  try {
+    const { token } = req.body;
+    if (!token || !token.trim()) {
+      return res.status(400).json({ error: 'Verification token is required.' });
+    }
+
+    const cleanToken = token.trim();
+    const tokenRecord = serverStore.verifyToken(cleanToken, 'email_verification');
+    const user = serverStore.getUserByEmail(tokenRecord.email);
+    if (!user) {
+      return res.status(404).json({ error: 'Account associated with this verification link was not found.' });
+    }
+
+    serverStore.updateUser(user.id, { email_verified: true });
+
+    return res.json({
+      success: true,
+      email: user.email,
+      message: 'Email successfully verified! You can now log in using the credentials you entered during signup.',
+    });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message || 'Invalid or expired verification link.' });
+  }
+});
+
+// Resend Verification Email
+app.post('/api/auth/resend-verification', (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    if (!email || !email.trim()) {
+      return res.status(400).json({ error: 'Email address is required.' });
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+    const user = serverStore.getUserByEmail(cleanEmail);
+    if (!user) {
+      return res.status(404).json({ error: 'No account found with this email address.' });
+    }
+
+    if (user.email_verified) {
+      return res.status(400).json({ error: 'This email is already verified. You can sign in directly.' });
+    }
+
+    const tokenRecord = serverStore.createToken(cleanEmail, 'email_verification');
+    const verificationCode = tokenRecord.token.substring(0, 6).toUpperCase();
+
+    const host = req.get('host') || 'localhost:3000';
+    const proto = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    const origin = `${proto}://${host}`;
+    const actionUrl = `${origin}/verify-email?token=${tokenRecord.token}&email=${encodeURIComponent(cleanEmail)}`;
+
+    sendOutboundVerificationEmail({
+      to: cleanEmail,
+      fullName: user.full_name,
+      actionUrl,
+      code: verificationCode,
+    });
+
+    return res.json({
+      success: true,
+      actionUrl,
+      code: verificationCode,
+      message: 'A new verification link has been dispatched to your email from Dailygap.',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to resend verification email.' });
   }
 });
 

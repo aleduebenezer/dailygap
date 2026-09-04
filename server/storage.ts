@@ -227,6 +227,7 @@ export class ServerStore {
     email: string;
     password: string;
     fullName: string;
+    email_verified?: boolean;
   }): StoredUser {
     const cleanEmail = params.email.toLowerCase().trim();
     if (this.users.has(cleanEmail)) {
@@ -238,6 +239,7 @@ export class ServerStore {
       ? 'user_dailygap_local'
       : `usr_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const username = params.fullName.trim().split(' ')[0] || (isSuperAdmin ? 'Ebenezer' : 'User');
+    const isVerified = params.email_verified !== undefined ? params.email_verified : (isSuperAdmin ? true : false);
 
     const newUser: StoredUser = {
       id,
@@ -247,7 +249,7 @@ export class ServerStore {
       username,
       avatar_url: '',
       role: isSuperAdmin ? 'super_admin' : 'user',
-      email_verified: true, // auto-verified on signup
+      email_verified: isVerified,
       account_frozen: false,
       ai_restricted: false,
       created_at: new Date().toISOString(),

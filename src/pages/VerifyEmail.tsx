@@ -18,6 +18,7 @@ import {
   Info,
   KeyRound,
   Copy,
+  ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,6 +42,26 @@ export default function VerifyEmail() {
 
   const tokenParam = searchParams.get("token");
   const emailParam = searchParams.get("email") || user?.email || "";
+
+  const getEmailProviderInfo = (userEmail: string) => {
+    const domain = userEmail.split("@")[1]?.toLowerCase() || "";
+    if (domain === "gmail.com" || domain === "googlemail.com") {
+      return { name: "Gmail", url: "https://mail.google.com" };
+    }
+    if (domain === "outlook.com" || domain === "hotmail.com" || domain === "live.com" || domain === "msn.com") {
+      return { name: "Outlook", url: "https://outlook.live.com" };
+    }
+    if (domain === "yahoo.com" || domain === "ymail.com") {
+      return { name: "Yahoo Mail", url: "https://mail.yahoo.com" };
+    }
+    if (domain === "icloud.com") {
+      return { name: "iCloud Mail", url: "https://www.icloud.com/mail" };
+    }
+    if (domain === "proton.me" || domain === "protonmail.com") {
+      return { name: "ProtonMail", url: "https://mail.proton.me" };
+    }
+    return null;
+  };
 
   // Page mode: 'verifying', 'success', 'expired', 'invalid', 'pending'
   const [status, setStatus] = useState<"verifying" | "success" | "expired" | "invalid" | "pending">(
@@ -85,6 +106,25 @@ export default function VerifyEmail() {
     return () => clearInterval(interval);
   }, [cooldownSeconds]);
 
+  // Automatic redirect to sign in upon successful verification
+  const [redirectCountdown, setRedirectCountdown] = useState(4);
+  useEffect(() => {
+    if (status === "success") {
+      const targetEmail = email || emailParam;
+      const timer = setInterval(() => {
+        setRedirectCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(timer);
+            navigate(`/auth?mode=signin&email=${encodeURIComponent(targetEmail)}&verified=true`);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(timer);
+    }
+  }, [status, email, emailParam, navigate]);
+
   // Process token if in URL
   useEffect(() => {
     if (!tokenParam) {
@@ -98,7 +138,8 @@ export default function VerifyEmail() {
       try {
         const result = await verifyEmail(tokenParam);
         if (result.success) {
-          if (result.user?.email) setEmail(result.user.email);
+          if (result.email) setEmail(result.email);
+          else if (result.user?.email) setEmail(result.user.email);
           setStatus("success");
           toast.success("Email verified successfully!");
         }
@@ -259,21 +300,28 @@ export default function VerifyEmail() {
                   <CheckCircle2 className="h-8 w-8" />
                 </div>
                 <div>
-                  <h1 className="font-display text-2xl font-bold text-foreground">Email verified successfully</h1>
-                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
-                    Your account has been activated. You can now access your Daily Gap workspace.
+                  <h1 className="font-display text-2xl font-bold text-foreground">Email verified successfully!</h1>
+                  <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+                    Your Dailygap account has been verified and activated. You can now log in using the credentials you entered during signup.
                   </p>
                 </div>
 
-                <div className="pt-2">
+                <div className="pt-3 space-y-2.5">
                   <Button
                     variant="hero"
                     size="lg"
-                    onClick={() => navigate("/dashboard")}
+                    onClick={() =>
+                      navigate(
+                        `/auth?mode=signin&email=${encodeURIComponent(email || emailParam)}&verified=true`
+                      )
+                    }
                     className="w-full rounded-xl gap-2 font-semibold h-11"
                   >
-                    Go to Dashboard <ArrowRight className="h-4 w-4" />
+                    Log In with Your Credentials <ArrowRight className="h-4 w-4" />
                   </Button>
+                  <p className="text-xs text-muted-foreground">
+                    Redirecting to login in {redirectCountdown}s...
+                  </p>
                 </div>
               </div>
             )}
@@ -285,9 +333,9 @@ export default function VerifyEmail() {
                   <Clock className="h-7 w-7" />
                 </div>
                 <div>
-                  <h1 className="font-display text-2xl font-bold text-foreground">Verification code expired</h1>
+                  <h1 className="font-display text-2xl font-bold text-foreground">Verification link expired</h1>
                   <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
-                    Your verification code has expired. Request a new code below.
+                    Your verification link or code has expired. Request a new verification email below.
                   </p>
                 </div>
 
@@ -307,13 +355,13 @@ export default function VerifyEmail() {
                   >
                     {resending ? (
                       <>
-                        <Loader2 className="h-4 w-4 animate-spin" /> Sending new code...
+                        <Loader2 className="h-4 w-4 animate-spin" /> Sending new email...
                       </>
                     ) : cooldownSeconds > 0 ? (
                       `Resend available in ${cooldownSeconds}s`
                     ) : (
                       <>
-                        <RefreshCw className="h-4 w-4" /> Resend verification code
+                        <RefreshCw className="h-4 w-4" /> Resend verification email
                       </>
                     )}
                   </Button>
@@ -336,9 +384,9 @@ export default function VerifyEmail() {
                   <AlertCircle className="h-7 w-7" />
                 </div>
                 <div>
-                  <h1 className="font-display text-2xl font-bold text-foreground">Invalid verification code</h1>
+                  <h1 className="font-display text-2xl font-bold text-foreground">Invalid or used link</h1>
                   <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
-                    {errorMessage || "The code entered is invalid or has already been used."}
+                    {errorMessage || "The verification link or code is invalid or has already been used."}
                   </p>
                 </div>
 
@@ -352,13 +400,13 @@ export default function VerifyEmail() {
                   >
                     {resending ? (
                       <>
-                        <Loader2 className="h-4 w-4 animate-spin" /> Sending code...
+                        <Loader2 className="h-4 w-4 animate-spin" /> Sending email...
                       </>
                     ) : cooldownSeconds > 0 ? (
                       `Resend available in ${cooldownSeconds}s`
                     ) : (
                       <>
-                        <RefreshCw className="h-4 w-4" /> Resend verification code
+                        <RefreshCw className="h-4 w-4" /> Resend verification email
                       </>
                     )}
                   </Button>
@@ -374,7 +422,7 @@ export default function VerifyEmail() {
               </div>
             )}
 
-            {/* STATE 5: PENDING VERIFICATION (DEFAULT VERIFICATION SCREEN) */}
+            {/* STATE 5: PENDING VERIFICATION (CHECK EMAIL SCREEN) */}
             {status === "pending" && (
               <div className="space-y-5">
                 <div className="mx-auto h-14 w-14 rounded-full bg-primary/10 flex items-center justify-center text-primary">
@@ -383,10 +431,10 @@ export default function VerifyEmail() {
 
                 <div>
                   <h1 className="font-display text-2xl sm:text-3xl font-bold text-foreground tracking-tight">
-                    Verify your email
+                    Check your email
                   </h1>
                   <p className="text-xs sm:text-sm text-muted-foreground mt-2 leading-relaxed">
-                    We sent a 6-digit verification code to:
+                    We sent a verification link from <strong className="text-foreground font-semibold">Dailygap</strong> to:
                   </p>
 
                   {/* Email Pill & Edit Toggle */}
@@ -437,29 +485,35 @@ export default function VerifyEmail() {
                   </div>
                 </div>
 
-                {/* 6-Digit OTP Code Input */}
-                <div className="flex flex-col items-center justify-center space-y-3 pt-2">
-                  <label htmlFor="verify-otp" className="text-xs font-medium text-muted-foreground">
-                    Enter the 6-character code from your email:
-                  </label>
-                  <InputOTP
-                    id="verify-otp"
-                    maxLength={6}
-                    value={inputCode}
-                    onChange={handleOtpChange}
-                    disabled={codeLoading}
-                    autoFocus
-                  >
-                    <InputOTPGroup className="gap-1.5 sm:gap-2">
-                      <InputOTPSlot index={0} className="h-12 w-10 sm:w-11 text-base sm:text-lg font-bold uppercase rounded-lg border border-input shadow-sm" />
-                      <InputOTPSlot index={1} className="h-12 w-10 sm:w-11 text-base sm:text-lg font-bold uppercase rounded-lg border border-input shadow-sm" />
-                      <InputOTPSlot index={2} className="h-12 w-10 sm:w-11 text-base sm:text-lg font-bold uppercase rounded-lg border border-input shadow-sm" />
-                      <InputOTPSlot index={3} className="h-12 w-10 sm:w-11 text-base sm:text-lg font-bold uppercase rounded-lg border border-input shadow-sm" />
-                      <InputOTPSlot index={4} className="h-12 w-10 sm:w-11 text-base sm:text-lg font-bold uppercase rounded-lg border border-input shadow-sm" />
-                      <InputOTPSlot index={5} className="h-12 w-10 sm:w-11 text-base sm:text-lg font-bold uppercase rounded-lg border border-input shadow-sm" />
-                    </InputOTPGroup>
-                  </InputOTP>
+                {/* Instructions Card */}
+                <div className="rounded-xl border border-border/80 bg-muted/30 p-4 text-left space-y-2.5">
+                  <div className="flex items-start gap-2.5">
+                    <CheckCircle2 className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+                    <p className="text-xs text-foreground leading-relaxed">
+                      Click the verification link inside your email to verify your address.
+                    </p>
+                  </div>
+                  <div className="flex items-start gap-2.5">
+                    <CheckCircle2 className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+                    <p className="text-xs text-foreground leading-relaxed">
+                      Once verified, you will be taken to sign in using the credentials you entered during signup.
+                    </p>
+                  </div>
                 </div>
+
+                {/* Direct Inbox Link if recognized provider */}
+                {email && getEmailProviderInfo(email) && (
+                  <div>
+                    <a
+                      href={getEmailProviderInfo(email)!.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full inline-flex items-center justify-center gap-2 font-semibold text-xs sm:text-sm h-11 px-4 rounded-xl bg-primary text-primary-foreground shadow-xs hover:brightness-105 transition-all"
+                    >
+                      <ExternalLink className="h-4 w-4" /> Open {getEmailProviderInfo(email)!.name} Inbox
+                    </a>
+                  </div>
+                )}
 
                 {/* Notifications & Banners */}
                 <AnimatePresence>
@@ -488,92 +542,122 @@ export default function VerifyEmail() {
                   )}
                 </AnimatePresence>
 
-                {/* Primary Action Button */}
-                <div className="space-y-2.5 pt-1">
-                  <Button
-                    variant="hero"
-                    size="lg"
-                    onClick={() => handleCodeVerify()}
-                    disabled={codeLoading || inputCode.trim().length === 0}
-                    className="w-full rounded-xl gap-2 font-semibold h-11 shadow-sm"
-                  >
-                    {codeLoading ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" /> Verifying code...
-                      </>
-                    ) : (
-                      <>
-                        <ShieldCheck className="h-4 w-4" /> Verify Code & Continue
-                      </>
-                    )}
-                  </Button>
+                {/* Optional Manual Code Input Toggle */}
+                <div className="border-t border-border/60 pt-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      Prefer to enter a verification code?
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowHelper(!showHelper)}
+                      className="text-xs text-primary font-semibold hover:underline"
+                    >
+                      {showHelper ? "Hide Code Box" : "Enter Code"}
+                    </button>
+                  </div>
 
-                  {/* Instant Verification Code Assistant / Preview for Testing & Seamless Access */}
-                  {activeCodeInfo && (
-                    <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 text-xs space-y-2 text-left">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-primary inline-flex items-center gap-1">
-                          <KeyRound className="h-3.5 w-3.5" /> Verification Code Helper
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setShowHelper(!showHelper)}
-                          className="text-[11px] text-muted-foreground hover:text-foreground font-medium underline"
-                        >
-                          {showHelper ? "Hide" : "Didn't receive email?"}
-                        </button>
-                      </div>
+                  {showHelper && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      className="space-y-3 pt-1"
+                    >
+                      <InputOTP
+                        id="verify-otp"
+                        maxLength={6}
+                        value={inputCode}
+                        onChange={handleOtpChange}
+                        disabled={codeLoading}
+                        autoFocus
+                      >
+                        <InputOTPGroup className="gap-1.5 sm:gap-2 justify-center">
+                          <InputOTPSlot index={0} className="h-11 w-9 sm:w-10 text-base font-bold uppercase rounded-lg border border-input shadow-xs" />
+                          <InputOTPSlot index={1} className="h-11 w-9 sm:w-10 text-base font-bold uppercase rounded-lg border border-input shadow-xs" />
+                          <InputOTPSlot index={2} className="h-11 w-9 sm:w-10 text-base font-bold uppercase rounded-lg border border-input shadow-xs" />
+                          <InputOTPSlot index={3} className="h-11 w-9 sm:w-10 text-base font-bold uppercase rounded-lg border border-input shadow-xs" />
+                          <InputOTPSlot index={4} className="h-11 w-9 sm:w-10 text-base font-bold uppercase rounded-lg border border-input shadow-xs" />
+                          <InputOTPSlot index={5} className="h-11 w-9 sm:w-10 text-base font-bold uppercase rounded-lg border border-input shadow-xs" />
+                        </InputOTPGroup>
+                      </InputOTP>
 
-                      {showHelper && (
-                        <div className="pt-1.5 space-y-2 border-t border-primary/10 animate-in fade-in text-muted-foreground">
-                          <p className="text-[11px] leading-relaxed">
-                            If your email provider is filtering automated mail or you are testing in preview:
-                          </p>
-                          <div className="flex items-center justify-between bg-card border border-border px-3 py-2 rounded-lg">
-                            <span className="font-mono text-sm font-bold tracking-widest text-foreground">
-                              {activeCodeInfo.code}
-                            </span>
-                            <div className="flex items-center gap-1">
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => {
-                                  navigator.clipboard.writeText(activeCodeInfo.code);
-                                  setCopiedCode(true);
-                                  toast.success("Code copied!");
-                                  setTimeout(() => setCopiedCode(false), 2000);
-                                }}
-                                className="h-7 px-2 text-[11px] gap-1"
-                              >
-                                {copiedCode ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
-                                {copiedCode ? "Copied" : "Copy"}
-                              </Button>
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="hero"
-                                onClick={() => {
-                                  setInputCode(activeCodeInfo.code);
-                                  handleCodeVerify(activeCodeInfo.code);
-                                }}
-                                className="h-7 px-2.5 text-[11px] font-semibold"
-                              >
-                                Auto-fill & Enter
-                              </Button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => handleCodeVerify()}
+                        disabled={codeLoading || inputCode.trim().length === 0}
+                        className="w-full rounded-xl gap-2 font-semibold h-9 text-xs"
+                      >
+                        {codeLoading ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Verifying...
+                          </>
+                        ) : (
+                          <>
+                            <ShieldCheck className="h-3.5 w-3.5" /> Submit Code
+                          </>
+                        )}
+                      </Button>
+                    </motion.div>
                   )}
+                </div>
 
+                {/* Instant Verification Assistant for Preview & Sandbox Testing */}
+                {activeCodeInfo && (
+                  <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 text-xs space-y-2 text-left">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-primary inline-flex items-center gap-1">
+                        <KeyRound className="h-3.5 w-3.5" /> Preview Testing Assistant
+                      </span>
+                      <span className="text-[10px] text-muted-foreground bg-primary/10 px-2 py-0.5 rounded-full font-mono">
+                        Sandbox
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Testing in preview without an external email inbox? You can simulate clicking the email verification link directly:
+                    </p>
+                    <div className="pt-1 flex flex-col sm:flex-row gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="hero"
+                        onClick={() => {
+                          const tokenMatch = activeCodeInfo.actionUrl.split("token=")[1]?.split("&")[0];
+                          if (tokenMatch) {
+                            navigate(`/verify-email?token=${tokenMatch}&email=${encodeURIComponent(email)}`);
+                          }
+                        }}
+                        className="h-8 text-xs font-semibold rounded-lg gap-1.5 flex-1"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" /> Simulate Clicking Email Link
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          navigator.clipboard.writeText(activeCodeInfo.code);
+                          setCopiedCode(true);
+                          toast.success("Verification code copied!");
+                          setTimeout(() => setCopiedCode(false), 2000);
+                        }}
+                        className="h-8 text-xs rounded-lg gap-1"
+                      >
+                        {copiedCode ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+                        {copiedCode ? "Copied" : "Copy Code"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Resend Action */}
+                <div className="space-y-2 pt-1">
                   <Button
                     variant="outline"
                     size="lg"
                     onClick={handleResend}
                     disabled={resending || cooldownSeconds > 0}
-                    className="w-full rounded-xl gap-2 font-medium h-10 text-xs shadow-sm"
+                    className="w-full rounded-xl gap-2 font-medium h-10 text-xs shadow-xs"
                   >
                     {resending ? (
                       <>
@@ -583,7 +667,7 @@ export default function VerifyEmail() {
                       `Resend available in ${cooldownSeconds}s`
                     ) : (
                       <>
-                        <RefreshCw className="h-3.5 w-3.5" /> Resend verification code
+                        <RefreshCw className="h-3.5 w-3.5" /> Resend verification email
                       </>
                     )}
                   </Button>
@@ -591,7 +675,7 @@ export default function VerifyEmail() {
                   {/* Tips */}
                   <div className="text-[11px] text-muted-foreground/80 flex items-center justify-center gap-1 pt-1">
                     <Info className="h-3 w-3" />
-                    <span>Tip: Please check your Spam or Junk folder for the code.</span>
+                    <span>Tip: Please check your Spam or Promotions folder for the email.</span>
                   </div>
 
                   <div className="pt-2 text-xs text-muted-foreground">

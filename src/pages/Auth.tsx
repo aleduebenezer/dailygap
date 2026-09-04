@@ -34,10 +34,12 @@ import { toast } from "sonner";
 
 export default function Auth() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialMode = searchParams.get("mode") === "signup" ? "signup" : "signin";
+  const verifiedParam = searchParams.get("verified") === "true";
+  const initialMode = verifiedParam ? "signin" : (searchParams.get("mode") === "signup" ? "signup" : "signin");
   const redirectTarget = searchParams.get("redirect") || "/dashboard";
 
   const [mode, setMode] = useState<"signin" | "signup">(initialMode);
+  const [justVerified, setJustVerified] = useState(verifiedParam);
   const { signIn, signUp, resendVerificationEmail } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
@@ -170,28 +172,25 @@ export default function Auth() {
 
     setLoading(true);
     try {
+      const cleanEmail = email.trim().toLowerCase();
       const result = await signUp({
         fullName: fullName.trim(),
-        email: email.trim(),
+        email: cleanEmail,
         password,
         confirmPassword,
       });
 
-      if (result.user.role === "super_admin" || result.user.email.toLowerCase() === "ebenezeraledu@gmail.com") {
-        toast.success("Super Admin account connected! Welcome to Daily Gap.");
-      } else {
-        toast.success("Account created successfully! Welcome to Daily Gap.");
-      }
-      navigate(redirectTarget.startsWith("/") ? redirectTarget : "/dashboard");
+      const isSuperAdmin = result.user.role === "super_admin" || cleanEmail === "ebenezeraledu@gmail.com";
 
-      /*
-       * Email verification modal popup commented out:
-       * 
-       * if (result.requiresVerification) {
-       *   setVerificationModalEmail(result.user.email);
-       *   setVerificationModalOpen(true);
-       * }
-       */
+      if (isSuperAdmin) {
+        toast.success("Super Admin account connected! Welcome to Dailygap.");
+        navigate(redirectTarget.startsWith("/") ? redirectTarget : "/dashboard");
+        return;
+      }
+
+      // Standard user flow: redirected directly to check email screen
+      toast.success("Account created! A verification link has been sent to your email from Dailygap.");
+      navigate(`/verify-email?email=${encodeURIComponent(cleanEmail)}&sent=true`);
     } catch (err: any) {
       console.error("Signup error:", err);
       setGeneralError(err.message || "Failed to create account. Please check your connection and try again.");
@@ -338,8 +337,25 @@ export default function Auth() {
               </div>
             </div>
 
-            {/* Error Banner */}
+            {/* Success & Verification Banners */}
             <AnimatePresence>
+              {justVerified && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="mb-5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-xs text-emerald-700 dark:text-emerald-300 flex items-start gap-2.5"
+                >
+                  <CheckCircle2 className="h-5 w-5 shrink-0 mt-0.5 text-emerald-500" />
+                  <div className="space-y-1">
+                    <p className="font-bold text-sm">Email verified successfully!</p>
+                    <p className="leading-relaxed">
+                      Your Dailygap account has been verified. Please enter the password you used during signup to access your dashboard.
+                    </p>
+                  </div>
+                </motion.div>
+              )}
+
               {generalError && (
                 <motion.div
                   initial={{ opacity: 0, height: 0 }}
@@ -374,13 +390,12 @@ export default function Auth() {
                           size="sm"
                           variant="hero"
                           onClick={() => {
-                            setVerificationModalEmail(unverifiedEmail);
-                            setVerificationModalOpen(true);
+                            navigate(`/verify-email?email=${encodeURIComponent(unverifiedEmail)}`);
                           }}
                           className="h-8 text-xs px-3 rounded-lg gap-1.5 font-semibold bg-primary text-primary-foreground shadow-sm"
                         >
-                          <KeyRound className="h-3.5 w-3.5" />
-                          Enter Verification Code
+                          <Mail className="h-3.5 w-3.5" />
+                          Check Email Verification
                         </Button>
                         <Button
                           type="button"
@@ -395,7 +410,7 @@ export default function Auth() {
                           ) : (
                             <RefreshCw className="h-3.5 w-3.5" />
                           )}
-                          Resend Code
+                          Resend Link
                         </Button>
                       </div>
                     )}

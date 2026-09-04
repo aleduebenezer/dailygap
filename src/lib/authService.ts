@@ -360,37 +360,53 @@ export const authService = {
       const data = await resp.json().catch(() => ({}));
       if (resp.ok && data.success && data.user) {
         const authUser: AuthUser = data.user;
-        const session: AuthSession = {
-          user: authUser,
-          token: data.session?.token || generateToken(48),
-          expires_at: data.session?.expires_at || (Date.now() + 30 * 24 * 60 * 60 * 1000),
-          remember_me: true,
-        };
 
+        // Store user and credentials locally
         const users = getStoredUsers();
         users[cleanEmail] = {
           user: authUser,
           passwordHash: password,
         };
         saveStoredUsers(users);
-        this.saveSession(session);
 
+        if (isSuperAdmin) {
+          const session: AuthSession = {
+            user: authUser,
+            token: data.session?.token || generateToken(48),
+            expires_at: data.session?.expires_at || (Date.now() + 30 * 24 * 60 * 60 * 1000),
+            remember_me: true,
+          };
+          this.saveSession(session);
+
+          try {
+            localStorage.setItem(`dailygap_profile_${authUser.id}`, JSON.stringify({
+              id: authUser.id,
+              email: cleanEmail,
+              username: authUser.username,
+              full_name: authUser.full_name,
+              avatar_url: authUser.avatar_url || '',
+            }));
+          } catch {
+            // Ignore storage quota error
+          }
+
+          return {
+            user: authUser,
+            requiresVerification: false,
+            session,
+          };
+        }
+
+        // For standard users: generate local verification token & email entry as well
         try {
-          localStorage.setItem(`dailygap_profile_${authUser.id}`, JSON.stringify({
-            id: authUser.id,
-            email: cleanEmail,
-            username: authUser.username,
-            full_name: authUser.full_name,
-            avatar_url: authUser.avatar_url || '',
-          }));
-        } catch {
-          // Ignore storage quota error
+          await this.sendVerificationEmail(cleanEmail);
+        } catch (mailErr) {
+          console.warn('[authService] Local mail record generation note:', mailErr);
         }
 
         return {
           user: authUser,
-          requiresVerification: false,
-          session,
+          requiresVerification: true,
         };
       } else if (!resp.ok && data.error) {
         throw new Error(data.error);
@@ -419,8 +435,7 @@ export const authService = {
       full_name: fullName.trim(),
       username: username,
       avatar_url: users[cleanEmail]?.user.avatar_url || '',
-      // Automatically verify email once valid format is verified on signup
-      email_verified: true,
+      email_verified: isSuperAdmin ? true : false,
       role: isSuperAdmin ? 'super_admin' : 'user',
       created_at: users[cleanEmail]?.user.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -449,26 +464,28 @@ export const authService = {
       console.warn("Legacy profile cache failed:", e);
     }
 
-    // Immediately generate and persist active authenticated session
-    const session: AuthSession = {
-      user: newUser,
-      token: generateToken(48),
-      expires_at: Date.now() + 30 * 24 * 60 * 60 * 1000,
-      remember_me: true,
-    };
-    this.saveSession(session);
+    if (isSuperAdmin) {
+      const session: AuthSession = {
+        user: newUser,
+        token: generateToken(48),
+        expires_at: Date.now() + 30 * 24 * 60 * 60 * 1000,
+        remember_me: true,
+      };
+      this.saveSession(session);
 
-    /* 
-     * Email verification code dispatch commented out to allow direct instant signup 
-     * once email validity is confirmed:
-     * 
-     * const emailRecord = await this.sendVerificationEmail(cleanEmail);
-     */
+      return {
+        user: newUser,
+        requiresVerification: false,
+        session,
+      };
+    }
+
+    // Standard user requires verification
+    await this.sendVerificationEmail(cleanEmail);
 
     return {
       user: newUser,
-      requiresVerification: false,
-      session,
+      requiresVerification: true,
     };
   },
 
@@ -517,20 +534,27 @@ export const authService = {
     const outboundEmail: OutboundEmail = {
       id: `email_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       to: cleanEmail,
-      subject: 'Verify your Daily Gap account',
+      subject: 'Verify your Dailygap account',
       type: 'verification',
       token,
       actionUrl,
       sent_at: now,
       expires_at: expiresAt,
-      content: `Welcome to Daily Gap! Please verify your email by clicking the link below:\n\n${actionUrl}\n\nYour 6-character verification code is: ${verificationCode}\n\nThis link is valid for 24 hours. If you did not create an account, you can safely ignore this email.`,
+      content: `Welcome to Dailygap! Please verify your email by clicking the link below:\n\n${actionUrl}\n\nYour 6-character verification code is: ${verificationCode}\n\nThis link is valid for 24 hours. If you did not create a Dailygap account, you can safely ignore this email.`,
     };
 
     const emails = getStoredEmails();
     emails.unshift(outboundEmail);
     saveStoredEmails(emails.slice(0, 50)); // keep last 50
 
-    // Attempt external outbound email dispatch (e.g. via Resend API if configured)
+    // Also trigger server-side token and dispatch
+    fetch('/api/auth/resend-verification', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: cleanEmail }),
+    }).catch(() => {});
+
+    // Attempt client outbound email dispatch if Resend API key is available in Vite env
     const resendApiKey = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_RESEND_API_KEY);
     if (resendApiKey) {
       try {
@@ -541,19 +565,38 @@ export const authService = {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            from: 'Daily Gap <onboarding@resend.dev>',
+            from: 'Dailygap <onboarding@resend.dev>',
             to: [cleanEmail],
-            subject: 'Verify your Daily Gap account - Code: ' + verificationCode,
+            subject: 'Verify your Dailygap account',
             html: `
-              <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 540px; margin: auto; padding: 32px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff;">
-                <h2 style="color: #0f172a; margin-top: 0; font-size: 24px;">Verify your Daily Gap account</h2>
-                <p style="color: #475569; font-size: 15px; line-height: 1.6;">Welcome to Daily Gap! Please enter the 6-character verification code below to verify your email and activate your account:</p>
-                <div style="background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 12px; padding: 20px; text-align: center; margin: 24px 0;">
-                  <span style="font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #2563eb; font-family: monospace;">${verificationCode}</span>
+              <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 36px 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff; color: #0f172a;">
+                <div style="margin-bottom: 24px;">
+                  <h2 style="color: #0f172a; font-size: 22px; font-weight: 700; margin: 0 0 10px;">Verify your Dailygap account</h2>
+                  <p style="color: #475569; font-size: 15px; line-height: 1.6; margin: 0;">
+                    Welcome to Dailygap! Please click the verification button below to activate your account:
+                  </p>
                 </div>
-                <p style="color: #64748b; font-size: 14px; margin-bottom: 20px;">Or click the direct link below to verify immediately:</p>
-                <a href="${actionUrl}" style="display: inline-block; padding: 12px 24px; background: #2563eb; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">Verify Email Address</a>
-                <p style="color: #94a3b8; font-size: 12px; margin-top: 32px; border-top: 1px solid #f1f5f9; padding-top: 16px;">This verification code is valid for 24 hours. If you did not create a Daily Gap account, you can safely ignore this message.</p>
+
+                <div style="text-align: center; margin: 32px 0;">
+                  <a href="${actionUrl}" style="display: inline-block; background-color: #0284c7; color: #ffffff; font-weight: 600; font-size: 15px; padding: 14px 32px; border-radius: 10px; text-decoration: none; box-shadow: 0 2px 4px rgba(2, 132, 199, 0.25);">
+                    Verify Email Address
+                  </a>
+                </div>
+
+                <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; margin: 24px 0; text-align: center;">
+                  <p style="font-size: 13px; color: #64748b; margin: 0 0 6px;">Or use this 6-character verification code:</p>
+                  <span style="font-family: monospace; font-size: 24px; font-weight: 700; letter-spacing: 6px; color: #0284c7;">${verificationCode}</span>
+                </div>
+
+                <p style="color: #64748b; font-size: 13px; line-height: 1.5; margin: 24px 0 0;">
+                  If the button doesn't work, copy and paste this verification link directly into your browser:<br />
+                  <a href="${actionUrl}" style="color: #0284c7; word-break: break-all;">${actionUrl}</a>
+                </p>
+
+                <hr style="border: none; border-top: 1px solid #f1f5f9; margin: 32px 0 16px;" />
+                <p style="color: #94a3b8; font-size: 12px; margin: 0;">
+                  This link is valid for 24 hours. If you did not sign up for Dailygap, please ignore this email.
+                </p>
               </div>
             `,
           }),
@@ -660,15 +703,31 @@ export const authService = {
   },
 
   // VERIFY EMAIL WITH TOKEN OR CODE
-  async verifyEmailToken(tokenOrCode: string): Promise<{ success: boolean; user: AuthUser; session?: AuthSession }> {
+  async verifyEmailToken(tokenOrCode: string): Promise<{ success: boolean; user?: AuthUser; email: string }> {
     if (!tokenOrCode || !tokenOrCode.trim()) {
       throw new Error('Verification link or code is missing or invalid.');
     }
 
     const cleanInput = tokenOrCode.trim();
+    let verifiedEmail = '';
+
+    // 1. Primary: Server-side verification
+    try {
+      const resp = await fetch('/api/auth/verify-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: cleanInput }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data.success) {
+        verifiedEmail = data.email?.toLowerCase().trim() || '';
+      }
+    } catch (e) {
+      console.warn('[authService] Server email verification network notice:', e);
+    }
+
+    // 2. Validate against local tokens / storage
     const tokens = getStoredTokens();
-    
-    // Match either full token string OR 6-char code prefix
     const tokenRecord = tokens.find(
       (t) =>
         (t.token === cleanInput ||
@@ -676,43 +735,37 @@ export const authService = {
         t.type === 'email_verification'
     );
 
-    if (!tokenRecord) {
-      throw new Error('Invalid verification link or code. Please request a new verification link.');
+    if (!tokenRecord && !verifiedEmail) {
+      throw new Error('Invalid or expired verification link. Please request a new verification email.');
     }
 
-    if (tokenRecord.used) {
-      throw new Error('This verification link has already been used. Please sign in to your account.');
-    }
-
-    if (Date.now() > tokenRecord.expires_at) {
-      throw new Error('Your verification link has expired. Please request a new verification email.');
+    if (tokenRecord) {
+      if (tokenRecord.used && !verifiedEmail) {
+        throw new Error('This verification link has already been used. Please sign in to your account.');
+      }
+      if (Date.now() > tokenRecord.expires_at && !verifiedEmail) {
+        throw new Error('Your verification link has expired. Please request a new verification link.');
+      }
+      tokenRecord.used = true;
+      saveStoredTokens(tokens);
+      if (!verifiedEmail) {
+        verifiedEmail = tokenRecord.email.toLowerCase();
+      }
     }
 
     const users = getStoredUsers();
-    const userEntry = users[tokenRecord.email.toLowerCase()];
-
-    if (!userEntry) {
-      throw new Error('Account associated with this verification link was not found.');
+    const userEntry = users[verifiedEmail];
+    if (userEntry) {
+      userEntry.user.email_verified = true;
+      userEntry.user.updated_at = new Date().toISOString();
+      users[verifiedEmail] = userEntry;
+      saveStoredUsers(users);
     }
-
-    // Mark token used
-    tokenRecord.used = true;
-    saveStoredTokens(tokens);
-
-    // Mark user verified
-    userEntry.user.email_verified = true;
-    userEntry.user.updated_at = new Date().toISOString();
-    users[tokenRecord.email.toLowerCase()] = userEntry;
-    saveStoredUsers(users);
-
-    // Create active session
-    const session = createSession(userEntry.user, true);
-    this.saveSession(session);
 
     return {
       success: true,
-      user: userEntry.user,
-      session,
+      email: verifiedEmail,
+      user: userEntry?.user,
     };
   },
 
@@ -872,14 +925,19 @@ export const authService = {
       } else if (resp.status === 429 && !isSuperAdmin) {
         throw new Error(data.error || 'Too many failed login attempts.');
       } else if (resp.status === 403) {
-        throw new Error(data.error || 'Your account has been suspended by an Administrator.');
+        const customErr: any = new Error(data.error || 'Your account has been suspended by an Administrator.');
+        customErr.code = data.code;
+        customErr.email = data.email || cleanEmail;
+        throw customErr;
       }
     } catch (err: any) {
       if (
         err.message?.includes('Account not found') ||
         err.message?.includes('Incorrect email') ||
         err.message?.includes('temporarily locked') ||
-        err.message?.includes('suspended')
+        err.message?.includes('suspended') ||
+        err.code === 'EMAIL_NOT_VERIFIED' ||
+        err.message?.includes('verified')
       ) {
         throw err;
       }
@@ -944,6 +1002,16 @@ export const authService = {
     // Check if account is frozen / suspended
     if (userEntry.user.account_frozen) {
       throw new Error('Your account has been suspended by an Administrator. Please submit an appeal or contact support.');
+    }
+
+    // Require email verification before signing in (unless super admin)
+    if (!userEntry.user.email_verified && !isSuperAdmin) {
+      const unverifiedErr: any = new Error(
+        'Your email address has not been verified yet. Please check your inbox and click the verification link before signing in.'
+      );
+      unverifiedErr.code = 'EMAIL_NOT_VERIFIED';
+      unverifiedErr.email = cleanEmail;
+      throw unverifiedErr;
     }
 
     // Login successful - clear rate limits

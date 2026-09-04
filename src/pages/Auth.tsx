@@ -28,7 +28,6 @@ import { SEO } from "@/components/SEO";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { PasswordRequirements } from "@/components/PasswordRequirements";
-import { VerificationCodeModal } from "@/components/VerificationCodeModal";
 import { authService, isValidEmail, evaluatePasswordStrength } from "@/lib/authService";
 import { toast } from "sonner";
 
@@ -62,12 +61,6 @@ export default function Auth() {
   const [resendLoading, setResendLoading] = useState(false);
   const [resendSuccess, setResendSuccess] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-
-  // Verification modal state
-  const [verificationModalOpen, setVerificationModalOpen] = useState(false);
-  const [verificationModalEmail, setVerificationModalEmail] = useState("");
-
-  // Rate limit lockout state
   const [lockoutSeconds, setLockoutSeconds] = useState(0);
 
   // Sync mode changes to URL query param
@@ -82,6 +75,29 @@ export default function Auth() {
       return prev;
     });
   };
+
+  // Detect Supabase email verification confirmation in URL hash or query params
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const hash = window.location.hash || "";
+      const search = window.location.search || "";
+      if (
+        hash.includes("type=signup") ||
+        hash.includes("access_token") ||
+        search.includes("verified=true") ||
+        verifiedParam
+      ) {
+        setJustVerified(true);
+        setMode("signin");
+        // Clean URL hash without reload
+        try {
+          window.history.replaceState(null, "", window.location.pathname + "?mode=signin&verified=true");
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }, [verifiedParam]);
 
   // Check rate limit status on email change
   useEffect(() => {
@@ -189,7 +205,7 @@ export default function Auth() {
       }
 
       // Standard user flow: redirected directly to check email screen
-      toast.success("Account created! A verification link has been sent to your email from Dailygap.");
+      toast.success("Account created! Please check your email and click the verification link before logging in.");
       navigate(`/verify-email?email=${encodeURIComponent(cleanEmail)}&sent=true`);
     } catch (err: any) {
       console.error("Signup error:", err);
@@ -233,7 +249,8 @@ export default function Auth() {
       if (err.code === "EMAIL_NOT_VERIFIED") {
         const targetEmail = err.email || email.trim();
         setUnverifiedEmail(targetEmail);
-        setGeneralError("Please verify your email before signing in.");
+        setGeneralError("Please verify your email before logging in.");
+        toast.error("Please verify your email before logging in.");
       } else {
         const errorMsg = err.message || "Failed to sign in. Please try again.";
         setGeneralError(errorMsg);
@@ -254,10 +271,10 @@ export default function Auth() {
     setResendSuccess(null);
     try {
       await resendVerificationEmail(unverifiedEmail);
-      setResendSuccess(`Verification code sent to ${unverifiedEmail}. Check your inbox.`);
-      toast.success("Verification code sent!");
+      setResendSuccess(`Verification email sent to ${unverifiedEmail}. Check your inbox.`);
+      toast.success("Verification email sent!");
     } catch (err: any) {
-      toast.error(err.message || "Failed to resend verification code.");
+      toast.error(err.message || "Failed to resend verification email.");
     } finally {
       setResendLoading(false);
     }
@@ -348,10 +365,7 @@ export default function Auth() {
                 >
                   <CheckCircle2 className="h-5 w-5 shrink-0 mt-0.5 text-emerald-500" />
                   <div className="space-y-1">
-                    <p className="font-bold text-sm">Email verified successfully!</p>
-                    <p className="leading-relaxed">
-                      Your Dailygap account has been verified. Please enter the password you used during signup to access your dashboard.
-                    </p>
+                    <p className="font-bold text-sm">Email verified successfully. You can now log in.</p>
                   </div>
                 </motion.div>
               )}
@@ -410,7 +424,7 @@ export default function Auth() {
                           ) : (
                             <RefreshCw className="h-3.5 w-3.5" />
                           )}
-                          Resend Link
+                          Resend verification email
                         </Button>
                       </div>
                     )}
@@ -670,18 +684,6 @@ export default function Auth() {
           </div>
         </motion.div>
       </main>
-
-      {/* Standard Email Verification Code Modal */}
-      <VerificationCodeModal
-        open={verificationModalOpen}
-        onOpenChange={setVerificationModalOpen}
-        email={verificationModalEmail}
-        redirectTarget={redirectTarget}
-        onEmailChange={(newEmail) => {
-          setEmail(newEmail);
-          setVerificationModalEmail(newEmail);
-        }}
-      />
     </div>
   );
 }

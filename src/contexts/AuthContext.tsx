@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { AuthUser, AuthSession, OutboundEmail } from "@/lib/authTypes";
 import { authService } from "@/lib/authService";
+import { supabase } from "@/integrations/supabase/client";
 
 export interface LocalUserProfile {
   id: string;
@@ -59,10 +60,73 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [session, setSession] = useState<AuthSession | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const initAuth = () => {
+  const mapSupabaseUser = (sbUser: any, token?: string, expiresAt?: number): { user: AuthUser; session: AuthSession } => {
+    const isConfirmed = Boolean(
+      sbUser.email_confirmed_at ||
+      sbUser.confirmed_at ||
+      sbUser.email?.toLowerCase() === 'ebenezeraledu@gmail.com'
+    );
+    const fullName = sbUser.user_metadata?.full_name || sbUser.user_metadata?.name || '';
+    const username = sbUser.user_metadata?.username || fullName.split(' ')[0] || sbUser.email?.split('@')[0] || 'User';
+
+    const authUser: AuthUser = {
+      id: sbUser.id,
+      email: sbUser.email || '',
+      full_name: fullName,
+      username,
+      avatar_url: sbUser.user_metadata?.avatar_url || '',
+      email_verified: isConfirmed,
+      role: sbUser.email?.toLowerCase() === 'ebenezeraledu@gmail.com' ? 'super_admin' : (sbUser.user_metadata?.role || 'user'),
+      created_at: sbUser.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      last_sign_in_at: sbUser.last_sign_in_at || new Date().toISOString(),
+      account_frozen: false,
+      ai_restricted: false,
+    };
+
+    const localSession: AuthSession = {
+      user: authUser,
+      token: token || 'sb_auth_token',
+      expires_at: expiresAt ? expiresAt * 1000 : Date.now() + 30 * 24 * 60 * 60 * 1000,
+      remember_me: true,
+    };
+
+    return { user: authUser, session: localSession };
+  };
+
+  const initAuth = async () => {
     try {
+      // 1. Check native Supabase session
+      const { data } = await supabase.auth.getSession();
+      if (data?.session?.user) {
+        const isConfirmed = Boolean(
+          data.session.user.email_confirmed_at ||
+          data.session.user.confirmed_at ||
+          data.session.user.email?.toLowerCase() === 'ebenezeraledu@gmail.com'
+        );
+
+        if (isConfirmed) {
+          const { user: authUser, session: localSession } = mapSupabaseUser(
+            data.session.user,
+            data.session.access_token,
+            data.session.expires_at
+          );
+          setUser(authUser);
+          setSession(localSession);
+          authService.saveSession(localSession);
+          return;
+        } else {
+          // Unverified user: do not allow session
+          setUser(null);
+          setSession(null);
+          authService.clearSession();
+          return;
+        }
+      }
+
+      // 2. Fallback to local stored session (for super admin or offline support)
       const activeSession = authService.getCurrentSession();
-      if (activeSession && activeSession.user) {
+      if (activeSession && activeSession.user && activeSession.user.email_verified) {
         setSession(activeSession);
         setUser(activeSession.user);
       } else {
@@ -80,11 +144,44 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     initAuth();
+
+    // Subscribe to native Supabase Auth state changes
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, sbSession) => {
+      if (sbSession?.user) {
+        const isConfirmed = Boolean(
+          sbSession.user.email_confirmed_at ||
+          sbSession.user.confirmed_at ||
+          sbSession.user.email?.toLowerCase() === 'ebenezeraledu@gmail.com'
+        );
+        if (isConfirmed) {
+          const { user: authUser, session: localSession } = mapSupabaseUser(
+            sbSession.user,
+            sbSession.access_token,
+            sbSession.expires_at
+          );
+          setUser(authUser);
+          setSession(localSession);
+          authService.saveSession(localSession);
+        } else {
+          setUser(null);
+          setSession(null);
+          authService.clearSession();
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null);
+        setSession(null);
+        authService.clearSession();
+      }
+    });
+
+    return () => {
+      authListener?.subscription?.unsubscribe();
+    };
   }, []);
 
   const refreshUser = async () => {
     const activeSession = authService.getCurrentSession();
-    if (activeSession && activeSession.user) {
+    if (activeSession && activeSession.user && activeSession.user.email_verified) {
       setSession(activeSession);
       setUser(activeSession.user);
     } else {
@@ -122,7 +219,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const signOut = async () => {
-    authService.clearSession();
+    await authService.signOut();
     setUser(null);
     setSession(null);
   };

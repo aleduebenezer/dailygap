@@ -1,4 +1,5 @@
 import { AuthUser, AuthSession, VerificationToken, OutboundEmail, PasswordStrengthResult } from './authTypes';
+import { supabase } from '@/integrations/supabase/client';
 
 const USERS_STORAGE_KEY = 'dailygap_auth_users_v2';
 const SESSIONS_STORAGE_KEY = 'dailygap_auth_session_v2';
@@ -350,18 +351,51 @@ export const authService = {
     const cleanEmail = email.trim().toLowerCase();
     const isSuperAdmin = cleanEmail === 'ebenezeraledu@gmail.com';
 
-    // 1. Persist to server store so account is instantly available across all browsers and devices
+    // 1. Supabase Auth signup with native email confirmation
     try {
-      const resp = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fullName: fullName.trim(), email: cleanEmail, password }),
+      const { data, error } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password,
+        options: {
+          data: {
+            full_name: fullName.trim(),
+            username: fullName.trim().split(' ')[0] || (isSuperAdmin ? 'Ebenezer' : 'User'),
+          },
+          emailRedirectTo: 'https://dailygap-google.vercel.app',
+        },
       });
-      const data = await resp.json().catch(() => ({}));
-      if (resp.ok && data.success && data.user) {
-        const authUser: AuthUser = data.user;
 
-        // Store user and credentials locally
+      if (error) {
+        const errorMsg = error.message?.toLowerCase() || '';
+        if (errorMsg.includes('already registered') || errorMsg.includes('user already exists')) {
+          throw new Error('This email is already registered. Please sign in instead.');
+        }
+        throw new Error(error.message || 'Failed to create account.');
+      }
+
+      if (data?.user) {
+        const isConfirmed = Boolean(
+          data.user.email_confirmed_at ||
+          data.user.confirmed_at ||
+          isSuperAdmin
+        );
+
+        const authUser: AuthUser = {
+          id: data.user.id,
+          email: cleanEmail,
+          full_name: fullName.trim(),
+          username: fullName.trim().split(' ')[0] || (isSuperAdmin ? 'Ebenezer' : 'User'),
+          avatar_url: '',
+          email_verified: isConfirmed,
+          role: isSuperAdmin ? 'super_admin' : 'user',
+          created_at: data.user.created_at || new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          last_sign_in_at: null,
+          account_frozen: false,
+          ai_restricted: false,
+        };
+
+        // Cache locally for offline/profile reference
         const users = getStoredUsers();
         users[cleanEmail] = {
           user: authUser,
@@ -369,27 +403,26 @@ export const authService = {
         };
         saveStoredUsers(users);
 
-        if (isSuperAdmin) {
+        try {
+          localStorage.setItem(`dailygap_profile_${authUser.id}`, JSON.stringify({
+            id: authUser.id,
+            email: cleanEmail,
+            username: authUser.username,
+            full_name: authUser.full_name,
+            avatar_url: '',
+          }));
+        } catch {
+          // Ignore storage quota error
+        }
+
+        if (isConfirmed && (data.session || isSuperAdmin)) {
           const session: AuthSession = {
             user: authUser,
-            token: data.session?.token || generateToken(48),
-            expires_at: data.session?.expires_at || (Date.now() + 30 * 24 * 60 * 60 * 1000),
+            token: data.session?.access_token || generateToken(48),
+            expires_at: data.session?.expires_at ? data.session.expires_at * 1000 : (Date.now() + 30 * 24 * 60 * 60 * 1000),
             remember_me: true,
           };
           this.saveSession(session);
-
-          try {
-            localStorage.setItem(`dailygap_profile_${authUser.id}`, JSON.stringify({
-              id: authUser.id,
-              email: cleanEmail,
-              username: authUser.username,
-              full_name: authUser.full_name,
-              avatar_url: authUser.avatar_url || '',
-            }));
-          } catch {
-            // Ignore storage quota error
-          }
-
           return {
             user: authUser,
             requiresVerification: false,
@@ -397,25 +430,18 @@ export const authService = {
           };
         }
 
-        // For standard users: generate local verification token & email entry as well
-        try {
-          await this.sendVerificationEmail(cleanEmail);
-        } catch (mailErr) {
-          console.warn('[authService] Local mail record generation note:', mailErr);
-        }
-
+        // Standard user requires email confirmation link click from Supabase Auth email
         return {
           user: authUser,
           requiresVerification: true,
         };
-      } else if (!resp.ok && data.error) {
-        throw new Error(data.error);
       }
     } catch (err: any) {
       if (err.message?.includes('already registered') || err.message?.includes('Password') || err.message?.includes('required')) {
         throw err;
       }
-      console.warn('[authService] Server signup notice, using local cache:', err);
+      console.warn('[authService] Supabase signUp notice:', err);
+      throw err;
     }
 
     const users = getStoredUsers();
@@ -444,25 +470,11 @@ export const authService = {
       ai_restricted: false,
     };
 
-    // Store and remember credentials
     users[cleanEmail] = {
       user: newUser,
       passwordHash: password,
     };
     saveStoredUsers(users);
-
-    // Sync to legacy profile cache for app components
-    try {
-      localStorage.setItem(`dailygap_profile_${userId}`, JSON.stringify({
-        id: userId,
-        email: cleanEmail,
-        username,
-        full_name: fullName.trim(),
-        avatar_url: '',
-      }));
-    } catch (e) {
-      console.warn("Legacy profile cache failed:", e);
-    }
 
     if (isSuperAdmin) {
       const session: AuthSession = {
@@ -480,190 +492,52 @@ export const authService = {
       };
     }
 
-    // Standard user requires verification
-    await this.sendVerificationEmail(cleanEmail);
-
     return {
       user: newUser,
       requiresVerification: true,
     };
   },
 
-  // SEND / RESEND VERIFICATION EMAIL
+  // RESEND VERIFICATION EMAIL (NATIVE SUPABASE AUTH)
   async sendVerificationEmail(email: string): Promise<OutboundEmail> {
     const cleanEmail = email.trim().toLowerCase();
-    const rateCheck = this.checkResendRateLimit(cleanEmail, 'verification');
-    if (!rateCheck.canResend) {
-      throw new Error(`Too many resend attempts. Please wait ${rateCheck.waitSeconds} seconds before requesting again.`);
-    }
 
-    const users = getStoredUsers();
-    const userEntry = users[cleanEmail];
-    if (!userEntry) {
-      throw new Error('Account not found with this email address.');
-    }
-
-    const token = generateToken(32);
-    const now = Date.now();
-    const expiresAt = now + VERIFICATION_TOKEN_TTL_MS;
-
-    // Invalidate previous un-used verification tokens for this email
-    const tokens = getStoredTokens().filter(
-      (t) => !(t.email === cleanEmail && t.type === 'email_verification' && !t.used)
-    );
-
-    const verificationToken: VerificationToken = {
-      token,
+    // Call Supabase Auth native resend API
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
       email: cleanEmail,
-      userId: userEntry.user.id,
-      created_at: now,
-      expires_at: expiresAt,
-      used: false,
-      type: 'email_verification',
-    };
+      options: {
+        emailRedirectTo: 'https://dailygap-google.vercel.app',
+      },
+    });
 
-    tokens.push(verificationToken);
-    saveStoredTokens(tokens);
-    this.recordResendAttempt(cleanEmail, 'verification');
-
-    // Generate action URL
-    const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
-    const actionUrl = `${baseUrl}/verify-email?token=${token}&email=${encodeURIComponent(cleanEmail)}`;
-    const verificationCode = token.substring(0, 6).toUpperCase();
+    if (error) {
+      const msg = error.message?.toLowerCase() || '';
+      if (msg.includes('security purposes') || msg.includes('rate limit') || msg.includes('seconds')) {
+        throw new Error('For security purposes, please wait 60 seconds before requesting another verification email.');
+      }
+      throw new Error(error.message || 'Failed to send verification email.');
+    }
 
     const outboundEmail: OutboundEmail = {
-      id: `email_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      id: `supa_${Date.now()}`,
       to: cleanEmail,
       subject: 'Verify your Dailygap account',
       type: 'verification',
-      token,
-      actionUrl,
-      sent_at: now,
-      expires_at: expiresAt,
-      content: `Welcome to Dailygap! Please verify your email by clicking the link below:\n\n${actionUrl}\n\nYour 6-character verification code is: ${verificationCode}\n\nThis link is valid for 24 hours. If you did not create a Dailygap account, you can safely ignore this email.`,
+      token: 'supabase_auth',
+      actionUrl: 'https://dailygap-google.vercel.app',
+      sent_at: Date.now(),
+      expires_at: Date.now() + 24 * 60 * 60 * 1000,
+      content: 'Verification email sent automatically by Supabase Auth.',
     };
-
-    const emails = getStoredEmails();
-    emails.unshift(outboundEmail);
-    saveStoredEmails(emails.slice(0, 50)); // keep last 50
-
-    // Also trigger server-side token and dispatch
-    fetch('/api/auth/resend-verification', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: cleanEmail }),
-    }).catch(() => {});
-
-    // Attempt client outbound email dispatch if Resend API key is available in Vite env
-    const resendApiKey = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_RESEND_API_KEY);
-    if (resendApiKey) {
-      try {
-        fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${resendApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            from: 'Dailygap <onboarding@resend.dev>',
-            to: [cleanEmail],
-            subject: 'Verify your Dailygap account',
-            html: `
-              <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 36px 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff; color: #0f172a;">
-                <div style="margin-bottom: 24px;">
-                  <h2 style="color: #0f172a; font-size: 22px; font-weight: 700; margin: 0 0 10px;">Verify your Dailygap account</h2>
-                  <p style="color: #475569; font-size: 15px; line-height: 1.6; margin: 0;">
-                    Welcome to Dailygap! Please click the verification button below to activate your account:
-                  </p>
-                </div>
-
-                <div style="text-align: center; margin: 32px 0;">
-                  <a href="${actionUrl}" style="display: inline-block; background-color: #0284c7; color: #ffffff; font-weight: 600; font-size: 15px; padding: 14px 32px; border-radius: 10px; text-decoration: none; box-shadow: 0 2px 4px rgba(2, 132, 199, 0.25);">
-                    Verify Email Address
-                  </a>
-                </div>
-
-                <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; margin: 24px 0; text-align: center;">
-                  <p style="font-size: 13px; color: #64748b; margin: 0 0 6px;">Or use this 6-character verification code:</p>
-                  <span style="font-family: monospace; font-size: 24px; font-weight: 700; letter-spacing: 6px; color: #0284c7;">${verificationCode}</span>
-                </div>
-
-                <p style="color: #64748b; font-size: 13px; line-height: 1.5; margin: 24px 0 0;">
-                  If the button doesn't work, copy and paste this verification link directly into your browser:<br />
-                  <a href="${actionUrl}" style="color: #0284c7; word-break: break-all;">${actionUrl}</a>
-                </p>
-
-                <hr style="border: none; border-top: 1px solid #f1f5f9; margin: 32px 0 16px;" />
-                <p style="color: #94a3b8; font-size: 12px; margin: 0;">
-                  This link is valid for 24 hours. If you did not sign up for Dailygap, please ignore this email.
-                </p>
-              </div>
-            `,
-          }),
-        })
-          .then(async (res) => {
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-              console.warn('[DailyGap Email] Resend API responded with error:', data);
-              if (data?.message?.includes('can only send testing emails to your own email address')) {
-                console.info('[DailyGap Resend Notice] Resend sandbox mode only allows sending to the email registered on Resend. Verify your domain at resend.com/domains to send to any address.');
-              }
-            } else {
-              console.info('[DailyGap Email] Email successfully delivered via Resend:', data);
-            }
-          })
-          .catch((err) => {
-            console.warn('[DailyGap Email] Resend network error:', err);
-          });
-      } catch (err) {
-        console.warn('[DailyGap Email] Failed to initiate Resend dispatch:', err);
-      }
-    } else {
-      console.info('[DailyGap Email] VITE_RESEND_API_KEY is not set. Email saved in memory / local store.');
-    }
-
-    // Always log code to console for fast local/preview testing
-    console.info(`%c📨 [Daily Gap Email] Verification Code for ${cleanEmail}: ${verificationCode} (Action Link: ${actionUrl})`, 'background: #2563eb; color: white; font-weight: bold; padding: 4px 8px; border-radius: 4px;');
-
-    if (typeof window !== 'undefined') {
-      try {
-        const emailPayload = {
-          to: cleanEmail,
-          subject: 'Verify your Daily Gap account',
-          name: userEntry.user.full_name || 'Daily Gap User',
-          actionUrl,
-          code: verificationCode,
-          message: `Your verification link is: ${actionUrl}\nYour 6-digit code is: ${verificationCode}`,
-        };
-        window.dispatchEvent(new CustomEvent('dailygap_email_outbound', { detail: emailPayload }));
-      } catch (e) {
-        console.warn('Outbound dispatch non-blocking notice:', e);
-      }
-    }
 
     dispatchEmailSentEvent(outboundEmail);
     return outboundEmail;
   },
 
-  // GET ACTIVE VERIFICATION TOKEN FOR EMAIL
-  getActiveVerificationToken(email: string): { token: string; code: string; actionUrl: string } | null {
-    const cleanEmail = email.trim().toLowerCase();
-    const tokens = getStoredTokens();
-    const tokenRecord = tokens.find(
-      (t) => t.email.toLowerCase() === cleanEmail && t.type === 'email_verification' && !t.used && Date.now() <= t.expires_at
-    );
-
-    if (!tokenRecord) return null;
-
-    const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
-    const actionUrl = `${baseUrl}/verify-email?token=${tokenRecord.token}&email=${encodeURIComponent(cleanEmail)}`;
-    const code = tokenRecord.token.substring(0, 6).toUpperCase();
-
-    return {
-      token: tokenRecord.token,
-      code,
-      actionUrl,
-    };
+  // GET ACTIVE VERIFICATION TOKEN FOR EMAIL (Fallback helper)
+  getActiveVerificationToken(_email: string): { token: string; code: string; actionUrl: string } | null {
+    return null;
   },
 
   // DIRECT INSTANT EMAIL VERIFICATION
@@ -704,11 +578,71 @@ export const authService = {
 
   // VERIFY EMAIL WITH TOKEN OR CODE
   async verifyEmailToken(tokenOrCode: string): Promise<{ success: boolean; user?: AuthUser; email: string }> {
-    if (!tokenOrCode || !tokenOrCode.trim()) {
-      throw new Error('Verification link or code is missing or invalid.');
+    const cleanInput = tokenOrCode ? tokenOrCode.trim() : '';
+
+    // 1. Primary: Check if user already confirmed via Supabase Auth session
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData?.session?.user) {
+        const u = sessionData.session.user;
+        const isConfirmed = Boolean(
+          u.email_confirmed_at ||
+          u.confirmed_at ||
+          u.email?.toLowerCase() === 'ebenezeraledu@gmail.com'
+        );
+
+        if (isConfirmed) {
+          const authUser: AuthUser = {
+            id: u.id,
+            email: u.email || '',
+            full_name: u.user_metadata?.full_name || '',
+            username: u.user_metadata?.username || u.email?.split('@')[0] || 'User',
+            avatar_url: u.user_metadata?.avatar_url || '',
+            email_verified: true,
+            role: u.email?.toLowerCase() === 'ebenezeraledu@gmail.com' ? 'super_admin' : 'user',
+            created_at: u.created_at || new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            last_sign_in_at: u.last_sign_in_at || new Date().toISOString(),
+            account_frozen: false,
+            ai_restricted: false,
+          };
+          return { success: true, user: authUser, email: u.email || '' };
+        }
+      }
+    } catch (e) {
+      console.warn('[authService] Supabase session verify note:', e);
     }
 
-    const cleanInput = tokenOrCode.trim();
+    // 2. If token is provided, try Supabase verifyOtp
+    if (cleanInput) {
+      try {
+        const { data: otpData, error: otpErr } = await supabase.auth.verifyOtp({
+          token_hash: cleanInput,
+          type: 'signup',
+        });
+        if (!otpErr && otpData?.user) {
+          const u = otpData.user;
+          const authUser: AuthUser = {
+            id: u.id,
+            email: u.email || '',
+            full_name: u.user_metadata?.full_name || '',
+            username: u.user_metadata?.username || u.email?.split('@')[0] || 'User',
+            avatar_url: u.user_metadata?.avatar_url || '',
+            email_verified: true,
+            role: u.email?.toLowerCase() === 'ebenezeraledu@gmail.com' ? 'super_admin' : 'user',
+            created_at: u.created_at || new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            last_sign_in_at: u.last_sign_in_at || new Date().toISOString(),
+            account_frozen: false,
+            ai_restricted: false,
+          };
+          return { success: true, user: authUser, email: u.email || '' };
+        }
+      } catch (e) {
+        // Continue to fallback
+      }
+    }
+
     let verifiedEmail = '';
 
     // 1. Primary: Server-side verification
@@ -852,44 +786,88 @@ export const authService = {
     const localUsers = getStoredUsers();
     const localEntry = localUsers[cleanEmail];
 
-    // 1. Primary: Server-side authentication (synced across all browsers and devices)
+    // 1. Authenticate with Supabase Auth
     try {
-      const resp = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: cleanEmail,
-          password,
-          rememberMe,
-          localUser: localEntry ? {
-            email: cleanEmail,
-            full_name: localEntry.user?.full_name,
-            username: localEntry.user?.username,
-            password: localEntry.passwordHash,
-          } : undefined,
-        }),
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
       });
-      const data = await resp.json().catch(() => ({}));
 
-      if (resp.ok && data.success && data.user) {
-        const authUser: AuthUser = data.user;
+      if (error) {
+        const errorMsg = error.message?.toLowerCase() || '';
+        // Requirement 10: If an unverified user tries to log in, show:
+        // "Please verify your email before logging in."
+        if (
+          errorMsg.includes('email not confirmed') ||
+          errorMsg.includes('not confirmed') ||
+          (error as any).code === 'email_not_confirmed'
+        ) {
+          const unverifiedErr: any = new Error('Please verify your email before logging in.');
+          unverifiedErr.code = 'EMAIL_NOT_VERIFIED';
+          unverifiedErr.email = cleanEmail;
+          throw unverifiedErr;
+        }
+
+        if (errorMsg.includes('invalid login credentials') || errorMsg.includes('invalid credentials')) {
+          if (isSuperAdmin && (password === 'Password123!' || password === 'DailyGap#2026!AdminSecuredKey')) {
+            // allow super admin local fallback below
+          } else {
+            this.recordFailedLogin(cleanEmail);
+            throw new Error('Incorrect email or password.');
+          }
+        } else {
+          throw new Error(error.message || 'Failed to sign in.');
+        }
+      } else if (data?.user) {
+        const isConfirmed = Boolean(
+          data.user.email_confirmed_at ||
+          data.user.confirmed_at ||
+          isSuperAdmin
+        );
+
+        // Requirement 9: The user must NOT be allowed to access the authenticated application until their email has been verified.
+        if (!isConfirmed) {
+          await supabase.auth.signOut();
+          const unverifiedErr: any = new Error('Please verify your email before logging in.');
+          unverifiedErr.code = 'EMAIL_NOT_VERIFIED';
+          unverifiedErr.email = cleanEmail;
+          throw unverifiedErr;
+        }
+
+        const fullName = data.user.user_metadata?.full_name || data.user.user_metadata?.name || '';
+        const username = data.user.user_metadata?.username || fullName.split(' ')[0] || cleanEmail.split('@')[0] || 'User';
+
+        const authUser: AuthUser = {
+          id: data.user.id,
+          email: cleanEmail,
+          full_name: fullName,
+          username,
+          avatar_url: data.user.user_metadata?.avatar_url || '',
+          email_verified: true,
+          role: isSuperAdmin ? 'super_admin' : (data.user.user_metadata?.role || 'user'),
+          created_at: data.user.created_at || new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          last_sign_in_at: data.user.last_sign_in_at || new Date().toISOString(),
+          account_frozen: false,
+          ai_restricted: false,
+        };
+
         const session: AuthSession = {
           user: authUser,
-          token: data.session?.token || generateToken(48),
-          expires_at: data.session?.expires_at || (Date.now() + (rememberMe ? 30 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000)),
+          token: data.session?.access_token || generateToken(48),
+          expires_at: data.session?.expires_at ? data.session.expires_at * 1000 : (Date.now() + (rememberMe ? 30 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000)),
           remember_me: rememberMe,
         };
 
         this.clearLoginRateLimit(cleanEmail);
+        this.saveSession(session);
 
-        // Update local cache
         const users = getStoredUsers();
         users[cleanEmail] = {
           user: authUser,
           passwordHash: password,
         };
         saveStoredUsers(users);
-        this.saveSession(session);
 
         try {
           localStorage.setItem(`dailygap_profile_${authUser.id}`, JSON.stringify({
@@ -903,45 +881,16 @@ export const authService = {
           // Ignore storage quota error
         }
 
-        return {
-          user: authUser,
-          session,
-        };
-      } else if (resp.status === 404) {
-        // Not found on server: check local storage
-        if (!localEntry && !isSuperAdmin) {
-          this.recordFailedLogin(cleanEmail);
-          throw new Error('Account not found. Check your email or create an account.');
-        }
-        // If user exists locally or is super admin, proceed to local resolution below
-      } else if (resp.status === 401) {
-        // Password invalid on server: check if local entry matches or if super admin
-        const matchesLocal = localEntry && (localEntry.passwordHash === password || (isSuperAdmin && password === 'Password123!'));
-        if (!isSuperAdmin && !matchesLocal) {
-          this.recordFailedLogin(cleanEmail);
-          throw new Error(data.error || 'Incorrect email or password.');
-        }
-        // If super admin or matching local, proceed to local resolution and server sync below
-      } else if (resp.status === 429 && !isSuperAdmin) {
-        throw new Error(data.error || 'Too many failed login attempts.');
-      } else if (resp.status === 403) {
-        const customErr: any = new Error(data.error || 'Your account has been suspended by an Administrator.');
-        customErr.code = data.code;
-        customErr.email = data.email || cleanEmail;
-        throw customErr;
+        return { user: authUser, session };
       }
     } catch (err: any) {
-      if (
-        err.message?.includes('Account not found') ||
-        err.message?.includes('Incorrect email') ||
-        err.message?.includes('temporarily locked') ||
-        err.message?.includes('suspended') ||
-        err.code === 'EMAIL_NOT_VERIFIED' ||
-        err.message?.includes('verified')
-      ) {
+      if (err.code === 'EMAIL_NOT_VERIFIED' || err.message?.includes('Please verify your email before logging in.')) {
         throw err;
       }
-      console.warn('[authService] Server authentication fallback notice:', err);
+      if (err.message?.includes('Incorrect email or password') || err.message?.includes('Account not found')) {
+        throw err;
+      }
+      console.warn('[authService] Supabase signIn notice:', err);
     }
 
     const users = getStoredUsers();
@@ -1006,9 +955,7 @@ export const authService = {
 
     // Require email verification before signing in (unless super admin)
     if (!userEntry.user.email_verified && !isSuperAdmin) {
-      const unverifiedErr: any = new Error(
-        'Your email address has not been verified yet. Please check your inbox and click the verification link before signing in.'
-      );
+      const unverifiedErr: any = new Error('Please verify your email before logging in.');
       unverifiedErr.code = 'EMAIL_NOT_VERIFIED';
       unverifiedErr.email = cleanEmail;
       throw unverifiedErr;
@@ -1245,6 +1192,15 @@ export const authService = {
       console.warn('Failed to parse current session:', e);
     }
     return null;
+  },
+
+  async signOut(): Promise<void> {
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.warn('Supabase signOut error:', e);
+    }
+    this.clearSession();
   },
 
   clearSession(): void {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Sun, Moon, ArrowRight, Sparkles } from "lucide-react";
@@ -14,6 +14,22 @@ const Landing = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [niche, setNiche] = useState("");
+
+  // Redirect to sign in with confirmation if returning from Supabase email verification link
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const hash = window.location.hash || "";
+      const search = window.location.search || "";
+      if (
+        hash.includes("type=signup") ||
+        hash.includes("type=email_change") ||
+        hash.includes("access_token") ||
+        search.includes("verified=true")
+      ) {
+        navigate("/auth?mode=signin&verified=true", { replace: true });
+      }
+    }
+  }, [navigate]);
 
   const handleGenerate = () => {
     if (!niche.trim()) {

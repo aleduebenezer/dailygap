@@ -23,65 +23,6 @@ app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
-// ---------------- EMAIL DISPATCH HELPER ----------------
-function sendOutboundVerificationEmail(params: {
-  to: string;
-  fullName: string;
-  actionUrl: string;
-  code: string;
-}) {
-  const { to, fullName, actionUrl, code } = params;
-  const resendKey = process.env.VITE_RESEND_API_KEY || process.env.RESEND_API_KEY;
-  if (!resendKey) {
-    console.info(`[Server Email] No Resend API key configured. Outbound verification for ${to} generated:\nAction Link: ${actionUrl}\nCode: ${code}`);
-    return;
-  }
-
-  fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${resendKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: 'Dailygap <onboarding@resend.dev>',
-      to: [to],
-      subject: 'Verify your Dailygap account',
-      html: `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 36px 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff; color: #0f172a;">
-          <div style="margin-bottom: 24px;">
-            <h2 style="color: #0f172a; font-size: 22px; font-weight: 700; margin: 0 0 10px;">Verify your Dailygap account</h2>
-            <p style="color: #475569; font-size: 15px; line-height: 1.6; margin: 0;">
-              Hi <b>${fullName || 'there'}</b>, welcome to Dailygap! Please verify your email address to activate your account.
-            </p>
-          </div>
-
-          <div style="text-align: center; margin: 32px 0;">
-            <a href="${actionUrl}" style="display: inline-block; background-color: #0284c7; color: #ffffff; font-weight: 600; font-size: 15px; padding: 14px 32px; border-radius: 10px; text-decoration: none; box-shadow: 0 2px 4px rgba(2, 132, 199, 0.25);">
-              Verify Email Address
-            </a>
-          </div>
-
-          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; margin: 24px 0; text-align: center;">
-            <p style="font-size: 13px; color: #64748b; margin: 0 0 6px;">Or use this 6-character verification code:</p>
-            <span style="font-family: monospace; font-size: 24px; font-weight: 700; letter-spacing: 6px; color: #0284c7;">${code}</span>
-          </div>
-
-          <p style="color: #64748b; font-size: 13px; line-height: 1.5; margin: 24px 0 0;">
-            If the button doesn't work, copy and paste this verification link directly into your browser:<br />
-            <a href="${actionUrl}" style="color: #0284c7; word-break: break-all;">${actionUrl}</a>
-          </p>
-
-          <hr style="border: none; border-top: 1px solid #f1f5f9; margin: 32px 0 16px;" />
-          <p style="color: #94a3b8; font-size: 12px; margin: 0;">
-            This verification link is valid for 24 hours. If you did not sign up for Dailygap, please disregard this email.
-          </p>
-        </div>
-      `,
-    }),
-  }).catch((e) => console.warn('[Server] Resend email verification error:', e?.message));
-}
-
 // ---------------- AUTH API ROUTES ----------------
 
 // Register / Sign Up
@@ -156,7 +97,6 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
       to: cleanEmail,
       fullName: user.full_name,
       actionUrl,
-      code: verificationCode,
     });
 
     return res.json({
@@ -461,7 +401,6 @@ app.post('/api/auth/resend-verification', (req: Request, res: Response) => {
       to: cleanEmail,
       fullName: user.full_name,
       actionUrl,
-      code: verificationCode,
     });
 
     return res.json({
@@ -549,23 +488,6 @@ app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
 
     const tokenRecord = serverStore.createToken(cleanEmail, 'password_reset');
     const resetCode = tokenRecord.token.substring(0, 6).toUpperCase();
-
-    const resendKey = process.env.VITE_RESEND_API_KEY || process.env.RESEND_API_KEY;
-    if (resendKey) {
-      fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${resendKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: 'Daily Gap <onboarding@resend.dev>',
-          to: [cleanEmail],
-          subject: 'Reset your Daily Gap password',
-          html: `<p>Your password reset code is: <b>${resetCode}</b></p>`,
-        }),
-      }).catch((e) => console.warn('[Server] Resend reset error:', e?.message));
-    }
 
     return res.json({ success: true, code: resetCode });
   } catch (err: any) {
